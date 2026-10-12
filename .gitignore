@@ -1,0 +1,5 @@
+# render output (shots, montages, bundles)
+out/
+
+# reference image (kept locally, not versioned)
+reference/

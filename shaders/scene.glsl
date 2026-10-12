@@ -1,0 +1,525 @@
+// scene.glsl - Buffer A: the sharp scene, linear RGB plus eye-space depth in
+// alpha. The Image pass (main.glsl) turns depth into a circle of confusion and
+// applies the depth of field.
+//
+// Geometry: a tiled floor (y = 0) in front of a cubic beam lattice whose
+// region and beams come from lattice.glsl. The lattice shares the floor's
+// orientation: its cells are CELL_TILES x CELL_TILES tiles and its joints
+// stand on tile joint crossings, so we see it at about 45 degrees. A world ray
+// is mapped into lattice space and traversed cell by cell (3D DDA); in each
+// cell only the beams and joints on that cell's edges and corners can be
+// hit, and they are intersected analytically as boxes.
+//
+// The camera is a pinhole with lens shift (like a shift lens or an
+// off-centre crop): the sensor stays vertical, so vertical beams stay
+// parallel. Its values and the floor grid come from a least-squares fit of the
+// grout lines in reference/reference.png (about 3 px RMS), constrained to this
+// physical model: square tiles on a flat plane seen by a pinhole camera.
+//
+// Defines (lengths in world units):
+//   -D BEAM=0.13       beam thickness in lattice cells
+//   -D CELL_TILES=2.0  lattice cell size in floor tiles (integer)
+//   -D TILE=0.7336     floor tile size
+//   -D TILE_ROT=47.006 rotation of the floor grid and the lattice against the
+//                      camera in degrees
+//   -D CAM_H=1.069     camera height
+//   -D CAM_X=0.735     camera x
+//   -D FOCAL=2.3034    focal length in half image heights (FOV 47.1 degrees)
+//   -D SHIFT_X=-0.1158 lens shift in half image heights
+//   -D SHIFT_Y=-0.2029
+//   -D ROLL=-0.0927    camera roll in degrees
+//   -D PITCH=0.0       camera pitch in degrees (positive = up)
+//   -D FADE=1.2        how fast light dies with depth inside the lattice
+//   -D AA=2            supersampling (AA x AA samples per pixel)
+//   -D MAX_STEPS=160   DDA step limit per lattice ray
+//
+// Floor and light (floor lengths in tiles):
+//   -D GAP=0.08        joint width between the slab walls
+//   -D BEVEL=0.04      radius of the rounded slab edges
+//   -D SLAB=0.12       depth of the joints down to the grout
+//   -D ALBEDO=0.66     mean albedo of the marble slabs
+//   -D VEIN=0.2        darkening of the marble veins
+//   -D ROUGH=0.35      GGX roughness of the honed marble
+//   -D LIGHT_R=1.5     radius of the sphere light (soft shadows, highlight)
+//   -D LIGHT_X=-2.0    light position (world): above the open room, fitted
+//   -D LIGHT_Y=6.0     to the brightness falloff of the reference floor
+//   -D LIGHT_Z=10.0
+
+#ifndef BEAM
+#define BEAM 0.13
+#endif
+#ifndef CELL_TILES
+#define CELL_TILES 2.0
+#endif
+#ifndef TILE
+#define TILE 0.7336
+#endif
+#ifndef TILE_ROT
+#define TILE_ROT 47.006
+#endif
+#ifndef CAM_H
+#define CAM_H 1.069
+#endif
+#ifndef CAM_X
+#define CAM_X 0.735
+#endif
+#ifndef FOCAL
+#define FOCAL 2.3034
+#endif
+#ifndef SHIFT_X
+#define SHIFT_X -0.1158
+#endif
+#ifndef SHIFT_Y
+#define SHIFT_Y -0.2029
+#endif
+#ifndef ROLL
+#define ROLL -0.0927
+#endif
+#ifndef PITCH
+#define PITCH 0.0
+#endif
+#ifndef FADE
+#define FADE 1.2
+#endif
+#ifndef AA
+#define AA 2
+#endif
+#ifndef GAP
+#define GAP 0.08
+#endif
+#ifndef BEVEL
+#define BEVEL 0.04
+#endif
+#ifndef SLAB
+#define SLAB 0.12
+#endif
+#ifndef VEIN
+#define VEIN 0.2
+#endif
+#ifndef ALBEDO
+#define ALBEDO 0.66
+#endif
+#ifndef ROUGH
+#define ROUGH 0.35
+#endif
+#ifndef LIGHT_R
+#define LIGHT_R 1.5
+#endif
+#ifndef LIGHT_X
+#define LIGHT_X -2.0
+#endif
+#ifndef LIGHT_Y
+#define LIGHT_Y 6.0
+#endif
+#ifndef LIGHT_Z
+#define LIGHT_Z 10.0
+#endif
+
+// Floor grid phase relative to the camera, in tiles (from the fit).
+const vec2 TILE_OFF = vec2(0.5493, 0.0090);
+
+#include "common.glsl"
+#include "lattice.glsl"
+
+#ifndef MAX_STEPS
+#define MAX_STEPS 160
+#endif
+const float HB = 0.5 * BEAM;               // half beam, lattice cells
+const float CELL = CELL_TILES * TILE;      // lattice cell, world units
+// Depth (cells) beyond which the fade leaves the lattice black.
+const float LAT_DMAX = 6.0 / (FADE * CELL) + 1.0;
+
+// Light: a sphere light above the open room, in front of the camera.
+const vec3 lightPos = vec3(LIGHT_X, LIGHT_Y, LIGHT_Z);
+
+// Cells near the lattice: the region grown by one cell, since beams on the
+// region's surface reach into the cells just outside it.
+bool nearRegion(ivec3 c) {
+    return c.y >= -1 && c.y <= LAT_YMAX && latSdf(vec2(c.xz) + 0.5) > -1.0;
+}
+
+void boxTest(vec3 ro, vec3 ird, vec3 c, vec3 hs, inout float tBest, inout vec3 cBest, inout vec3 hBest) {
+    vec3 t1 = (c - hs - ro) * ird, t2 = (c + hs - ro) * ird;
+    vec3 tn = min(t1, t2), tf = max(t1, t2);
+    float n = max(max(tn.x, tn.y), tn.z);
+    float f = min(min(tf.x, tf.y), tf.z);
+    if (n < f && n > 0.0 && n < tBest) {
+        tBest = n;
+        cBest = c;
+        hBest = hs;
+    }
+}
+
+// Ray interval inside the half-space p[axis] * s < d.
+vec2 halfSpace(vec3 ro, vec3 ird, int axis, float s, float d) {
+    float t = (d * s - ro[axis]) * ird[axis];
+    bool inside = ro[axis] * s < d;
+    if (isinf(t) || isnan(t)) return inside ? vec2(-1e9, 1e9) : vec2(1e9, -1e9);
+    return ird[axis] * s > 0.0 ? vec2(-1e9, t) : vec2(t, 1e9);
+}
+
+// Nearest lattice hit along a lattice-space ray (rd need not be unit), or -1.
+// nor is the box face normal.
+float traceLattice(vec3 ro, vec3 rd, out vec3 nor) {
+    nor = vec3(0.0);
+    vec3 ird = 1.0 / rd;
+
+    // clip to the vertical extent and to the region grown by one cell
+    vec2 ty = vec2(-1.0 - ro.y, float(LAT_YMAX) + 1.0 - ro.y) * ird.y;
+    ty = vec2(min(ty.x, ty.y), max(ty.x, ty.y));
+    vec2 hx = halfSpace(ro, ird, 0, 1.0, float(LAT_XC) + 1.0);
+#if LAT_VIEW == 2
+    vec2 hr = hx;
+#else
+    vec2 hz = halfSpace(ro, ird, 2, -1.0, 1.0 - float(LAT_ZF));
+#if LAT_VIEW == 0
+    vec2 hr = vec2(min(hx.x, hz.x), max(hx.y, hz.y));
+#else
+    vec2 hr = vec2(max(hx.x, hz.x), min(hx.y, hz.y));
+#endif
+#endif
+    float tIn = max(ty.x, hr.x), tOut = min(ty.y, hr.y);
+    if (tIn >= tOut || tOut < 0.0) return -1.0;
+
+    float t = max(tIn, 0.0) + 1e-4;
+    ivec3 c = ivec3(floor(ro + rd * t));
+    vec3 stp = sign(rd);
+    vec3 tMax = (vec3(c) + max(stp, 0.0) - ro) * ird;
+    vec3 tDel = abs(ird);
+
+    float tBest = 1e9;
+    vec3 cBest = vec3(0.0), hBest = vec3(1.0);
+
+    for (int i = 0; i < MAX_STEPS; i++) {
+        float tExit = min(min(tMax.x, tMax.y), tMax.z);
+
+        if (nearRegion(c)) {
+            if (latSdf(vec2(c.xz) + 0.5) > LAT_DMAX) break;
+
+            // states of the eight corner joints, index x + 2y + 4z
+            int k[8];
+            for (int j = 0; j < 8; j++) k[j] = joint(c + ivec3(j & 1, (j >> 1) & 1, j >> 2));
+
+            vec3 o = vec3(c);
+            for (int a = 0; a < 2; a++) {
+                for (int b = 0; b < 2; b++) {
+                    int ix = 2 * a + 4 * b, iy = a + 4 * b, iz = a + 2 * b;
+                    if (edgeOn(c + ivec3(0, a, b), 0, k[ix], k[ix + 1])) boxTest(ro, ird, o + vec3(0.5, a, b), vec3(0.5, HB, HB), tBest, cBest, hBest);
+                    if (edgeOn(c + ivec3(a, 0, b), 1, k[iy], k[iy + 2])) boxTest(ro, ird, o + vec3(a, 0.5, b), vec3(HB, 0.5, HB), tBest, cBest, hBest);
+                    if (edgeOn(c + ivec3(a, b, 0), 2, k[iz], k[iz + 4])) boxTest(ro, ird, o + vec3(a, b, 0.5), vec3(HB, HB, 0.5), tBest, cBest, hBest);
+                }
+            }
+            for (int j = 0; j < 8; j++)
+                if (nodeOn(k[j])) boxTest(ro, ird, o + vec3(j & 1, (j >> 1) & 1, j >> 2), vec3(HB), tBest, cBest, hBest);
+        }
+
+        if (tBest <= tExit || tExit > tOut) break;
+
+        if (tMax.x < tMax.y && tMax.x < tMax.z) {
+            c.x += int(stp.x);
+            tMax.x += tDel.x;
+        } else if (tMax.y < tMax.z) {
+            c.y += int(stp.y);
+            tMax.y += tDel.y;
+        } else {
+            c.z += int(stp.z);
+            tMax.z += tDel.z;
+        }
+    }
+
+    if (tBest > 1e8) return -1.0;
+
+    vec3 q = (ro + rd * tBest - cBest) / hBest;
+    vec3 aq = abs(q);
+    if (aq.x > aq.y && aq.x > aq.z) nor = vec3(sign(q.x), 0.0, 0.0);
+    else if (aq.y > aq.z) nor = vec3(0.0, sign(q.y), 0.0);
+    else nor = vec3(0.0, 0.0, sign(q.z));
+    return tBest;
+}
+
+// Broad soft light: wrapped Lambert with a gentle distance falloff.
+float lightAt(vec3 p, vec3 n) {
+    vec3 l = lightPos - p;
+    float d = length(l);
+    l /= d;
+    float diff = 0.15 + 0.85 * max(dot(n, l), 0.0);
+    return 2.0 * diff / (1.0 + d * d / 600.0);
+}
+
+// p, n and rd in world space, lp is p in lattice space.
+vec3 shadeLattice(vec3 p, vec3 n, vec3 rd, vec3 lp) {
+    // Crease darkening near the joints: distance along the beam to the
+    // nearest joint.
+    vec3 d = abs(lp - round(lp));
+    float along = max(max(d.x, d.y), d.z);
+    float ao = mix(0.55, 1.0, smoothstep(HB, HB + 0.3, along));
+
+    float fade = exp(-FADE * CELL * max(latSdf(lp.xz), 0.0));
+    float light = lightAt(p, n);
+
+    vec3 h = normalize(normalize(lightPos - p) - rd);
+    float spec = 0.08 * pow(max(dot(n, h), 0.0), 24.0);
+
+    float albedo = 0.5;
+    return vec3(albedo * light * ao + spec * light) * fade;
+}
+
+// ---- lattice interface (world space) ---------------------------------------
+// The floor and render() only talk to the lattice through these functions, so
+// its placement, orientation and rule stay private to the lattice code.
+
+// The lattice rests on the floor: its bottom beams sit on y = 0.
+const float LAT_LIFT = HB;
+
+// World to lattice space: the floor tile grid scaled to cells, lifted by
+// half a beam. Lattice x and z are the tile grid's q.x and q.y.
+vec3 toLattice(vec3 p) {
+    vec2 q = rot(radians(TILE_ROT)) * (p.xz - vec2(CAM_X, 0.0)) / TILE + TILE_OFF;
+    return vec3(q.x / CELL_TILES, p.y / CELL - LAT_LIFT, q.y / CELL_TILES);
+}
+
+// Nearest beam hit of a world ray (t > 0, world normal), or -1. The lattice
+// ray is not normalised, so t is the same in both spaces.
+float latticeHit(vec3 ro, vec3 rd, out vec3 nor) {
+    mat2 R = rot(radians(TILE_ROT));
+    vec2 dq = R * rd.xz;
+    vec3 lrd = vec3(dq.x, rd.y, dq.y) / CELL;
+    lrd += 1e-7 * step(abs(lrd), vec3(1e-7));   // keep 1/rd finite
+    float t = traceLattice(toLattice(ro), lrd, nor);
+    vec2 wn = nor.xz * R;                       // back to world xz
+    nor = vec3(wn.x, nor.y, wn.y);
+    return t;
+}
+
+// Signed horizontal distance of a world point to the lattice volume:
+// > 0 inside it (depth below the open faces), < 0 in the open room.
+float latSigned(vec3 p) {
+    return latSdf(toLattice(p).xz) * CELL;
+}
+
+// Colour of a lattice hit at world point p.
+vec3 latticeColor(vec3 p, vec3 n, vec3 rd) {
+    return shadeLattice(p, n, rd, toLattice(p));
+}
+
+// ---- floor ------------------------------------------------------------------
+// Honed marble slabs on a grout bed. Each slab is a box whose top is the plane
+// y = 0, with top edges rounded to radius BEVEL; neighbours stand GAP apart
+// and the grout fills the joints up to SLAB below the top (tile units). A
+// camera ray hits the top plane first; near an edge it is sphere-traced on,
+// over the rounded edge and into the joint, to the far wall or the grout.
+//
+// The floor sees the same light as lightAt(): a sphere light of radius
+// LIGHT_R at lightPos (the 0.85 Lambert part) plus a uniform sky (the 0.15
+// wrap part). Direct light is shadowed by real occlusion: by the slabs (a soft
+// sphere-traced shadow) and by the lattice (a shadow ray per AA sample to a
+// random point on the light, so the samples integrate the penumbra). The sky
+// is occluded by the joint walls and by the lattice.
+
+const float F0 = 0.05;           // calcite, n = 1.6: reflectance at normal incidence
+const float GROUT = 0.32;        // grout albedo
+
+// World point/direction -> tile space: x, z across the grid, y up, in tiles.
+vec3 toTile(vec3 p) {
+    vec2 q = rot(radians(TILE_ROT)) * (p.xz - vec2(CAM_X, 0.0)) / TILE + TILE_OFF;
+    return vec3(q.x, p.y / TILE, q.y);
+}
+vec3 tileDir(vec3 v) { return vec3(rot(radians(TILE_ROT)) * v.xz, v.y).xzy; }
+vec3 worldDir(vec3 v) { vec2 h = v.xz * rot(radians(TILE_ROT)); return vec3(h.x, v.y, h.y); }
+
+// Distance (tiles) to the slabs and the grout bed. Every slab is centred in
+// its cell, so the slab of the cell containing s is always the nearest one.
+float slabDist(vec3 s) {
+    vec3 c = vec3(fract(s.x) - 0.5, s.y + 0.5, fract(s.z) - 0.5);
+    vec3 d = abs(c) - (vec3(0.5 - 0.5 * GAP, 0.5, 0.5 - 0.5 * GAP) - BEVEL);
+    float slab = length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0) - BEVEL;
+    return min(slab, s.y + SLAB);
+}
+
+vec3 slabNormal(vec3 s) {
+    vec3 c = vec3(fract(s.x) - 0.5, s.y + 0.5, fract(s.z) - 0.5);
+    vec3 d = abs(c) - (vec3(0.5 - 0.5 * GAP, 0.5, 0.5 - 0.5 * GAP) - BEVEL);
+    float slab = length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0) - BEVEL;
+    if (s.y + SLAB < slab) return vec3(0.0, 1.0, 0.0);
+    return normalize(max(d, 1e-5 * step(d.yzx, d) * step(d.zxy, d)) * sign(c));
+}
+
+// Sphere-trace the slabs from the top-plane hit t; eps is the cone half-angle.
+float traceSlabs(vec3 ro, vec3 rd, float t, float eps) {
+    for (int i = 0; i < 48; i++) {
+        float d = slabDist(toTile(ro + rd * t)) * TILE;
+        if (d < eps * t) break;
+        t += d;
+    }
+    return t;
+}
+
+// Soft shadow of the slabs towards the light (tile space). Nothing rises
+// above the top plane, so the march ends there; k = 1 / tan(light radius).
+float slabShadow(vec3 s, vec3 l, float k) {
+    float res = 1.0, t = 0.003;
+    for (int i = 0; i < 24; i++) {
+        if (s.y + l.y * t > 0.0) break;
+        float h = slabDist(s + l * t);
+        res = min(res, k * h / t);
+        if (res < 0.01) return 0.0;
+        t += clamp(h, 0.003, 0.05);
+    }
+    return res * res * (3.0 - 2.0 * res);
+}
+
+// Cosine-weighted sky visibility (view factor) of a point in the slab
+// geometry. Below the rounded edges the joint is a 2D slot GAP wide: by the
+// crossed-strings rule a wall point at depth z sees 0.5 (1 - z / hypot(z, GAP))
+// of it, a grout point the two edges' sines. Above, the tilted bevel loses
+// the part of its hemisphere below the horizon: (1 + n.y) / 2.
+float slabSky(vec3 s, vec3 n) {
+    float z = -s.y - BEVEL;
+    if (z <= 0.0) return 0.5 + 0.5 * n.y;
+    if (n.y > 0.5) {
+        vec2 f = abs(s.xz - round(s.xz));
+        float a = 0.5 * GAP - min(f.x, f.y), b = GAP - a;
+        z = SLAB - BEVEL;
+        return 0.5 * (a / length(vec2(a, z)) + b / length(vec2(b, z)));
+    }
+    return 0.5 * (1.0 - z / length(vec2(z, GAP)));
+}
+
+// Sky visibility near the lattice. It is open, so it blocks the sky like a
+// solid wall about LAT_SKY_H high: a floor point x in front of such a wall
+// sees 1 - 0.5 (1 - x / hypot(x, h)) of the sky. Inside, the sky dies with
+// depth at the rate the lattice's own light fades.
+const float LAT_SKY_H = 2.0;
+float latticeSky(vec3 p) {
+    float sd = latSigned(p);
+    if (sd > 0.0) return 0.5 * exp(-FADE * sd);
+    return 0.5 + 0.5 * -sd / length(vec2(sd, LAT_SKY_H));
+}
+
+// Lattice shadow: one ray between p and a random point (xi) on the sphere
+// light. It is cast from the light down to p, so the traversal ends just
+// below the floor instead of running on through the lattice behind the light.
+float latticeShadow(vec3 p, vec2 xi) {
+    vec3 w = normalize(lightPos - p);
+    vec3 u = normalize(cross(w, vec3(0.0, 0.0, 1.0)));
+    vec3 v = cross(w, u);
+    float a = TAU * xi.y;
+    vec3 q = lightPos + LIGHT_R * sqrt(xi.x) * (u * cos(a) + v * sin(a));
+    vec3 d = p - q;
+    float dist = length(d);
+    vec3 nor;
+    float t = latticeHit(q, d / dist, nor);
+    return t > 0.0 && t < dist ? 0.0 : 1.0;
+}
+
+// Marble albedo at tile-space point s. Every slab is cut from a different
+// part of the block: its pattern gets its own rotation and offset. Veins
+// follow an iso-line of domain-warped fbm, stretched along the bedding
+// direction: a sharp core inside a soft halo, on a faintly clouded ground.
+// Where the veins get narrower than the footprint fw (tiles) they fade to
+// their mean cover, so far slabs keep the same average tone.
+float marble(vec3 s, float fw) {
+    vec2 id = floor(s.xz);
+    vec2 h = hash22(id + 17.3);
+    vec2 uv = rot(TAU * h.x) * (s.xz - id - 0.5) * vec2(0.7, 2.2) + 9.0 * h;
+    float tone = ALBEDO * (1.0 + 0.05 * (hash12(id) - 0.5));
+    float detail = 1.0 - smoothstep(0.01, 0.05, fw);
+    float vein = 0.1, cloud = 0.5;                      // mean cover
+    if (detail > 0.0) {
+        vec2 w = vec2(fbm(uv, 4), fbm(uv + vec2(5.2, 1.3), 4));
+        float e = abs(fbm(uv + 1.1 * w, 4) - 0.5);
+        float v = 0.35 * exp(-e / 0.05) + 0.65 * exp(-e / 0.008);
+        vein = mix(vein, v, detail);
+        cloud = mix(cloud, w.y, detail);
+    }
+    return tone * (1.0 - VEIN * vein) * (0.95 + 0.1 * cloud);
+}
+
+vec3 shadeFloor(vec3 ro, vec3 rd, float t0, float pixAngle, out float tHit) {
+    // sample footprint: AA samples split the pixel
+    float cone = pixAngle / float(AA);
+    tHit = traceSlabs(ro, rd, t0, 0.5 * cone);
+    vec3 p = ro + rd * tHit;
+    vec3 s = toTile(p);
+    vec3 ns = slabNormal(s);
+    vec3 n = worldDir(ns);
+    vec3 v = -rd;
+
+    // footprint on the floor, stretched along the view direction
+    float fw = cone * tHit / TILE / max(-rd.y, 0.02);
+    float albedo = s.y < -SLAB + 1e-3 ? GROUT : marble(s, fw);
+
+    vec3 L = lightPos - p;
+    float dist = length(L);
+    vec3 l = L / dist;
+    float I = 2.0 / (1.0 + dist * dist / 600.0);     // as in lightAt()
+    float nl = max(dot(n, l), 0.0);
+
+    float shadow = 0.0;
+    if (nl > 0.0) {
+        shadow = slabShadow(s + ns * 0.002, tileDir(l), dist / LIGHT_R);
+        vec2 xi = hash22(floor(rd.xy / cone * 2.0));   // per AA sample: seeded by the ray
+        if (shadow > 0.0) shadow *= latticeShadow(p + n * 1e-3, xi);
+    }
+    float sky = slabSky(s, ns) * latticeSky(p);
+
+    // GGX specular of the sphere light; its size widens the lobe (Karis).
+    float nv = max(dot(n, v), 1e-3);
+    vec3 hv = normalize(l + v);
+    float nh = max(dot(n, hv), 0.0);
+    float a = ROUGH * ROUGH;
+    float a2 = a * a;
+    float aw = min(a + LIGHT_R / (2.0 * dist), 1.0);
+    float dd = nh * nh * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * dd * dd) * (a / aw) * (a / aw);
+    float k = 0.5 * a;
+    float G = nl / (nl * (1.0 - k) + k) * nv / (nv * (1.0 - k) + k);
+    float F = F0 + (1.0 - F0) * pow(1.0 - max(dot(v, hv), 0.0), 5.0);
+    float spec = D * G * F / (4.0 * max(nl, 1e-3) * nv);
+
+    // rough Fresnel towards the sky (Lagarde); the diffuse gets the rest
+    float Fs = F0 + (max(1.0 - ROUGH, F0) - F0) * pow(1.0 - nv, 5.0);
+    float direct = 0.85 * I * nl * shadow;
+    float ambient = 0.15 * I * sky;
+    return vec3(albedo * (1.0 - Fs) * (direct + ambient) + PI * spec * direct + Fs * ambient);
+}
+
+// Colour and eye-space depth for one camera ray.
+vec4 render(vec2 fragCoord) {
+    vec2 uv = (2.0 * fragCoord - iResolution.xy) / iResolution.y - vec2(SHIFT_X, SHIFT_Y);
+
+    vec3 ro = vec3(CAM_X, CAM_H, 0.0);
+    float pa = radians(PITCH), ra = radians(ROLL);
+    vec3 fwd = vec3(0.0, sin(pa), cos(pa));
+    vec3 right = vec3(1.0, 0.0, 0.0);
+    vec3 up = cross(fwd, right);
+    vec3 r2 = right * cos(ra) + up * sin(ra);
+    vec3 u2 = up * cos(ra) - right * sin(ra);
+    vec3 rd = normalize(uv.x * r2 + uv.y * u2 + FOCAL * fwd);
+    rd += 1e-6 * step(abs(rd), vec3(1e-6)); // keep 1/rd finite
+
+    float pixAngle = 2.0 / (iResolution.y * FOCAL);
+
+    vec3 nor;
+    float tL = latticeHit(ro, rd, nor);
+    float tF = rd.y < 0.0 ? -ro.y / rd.y : -1.0;
+
+    vec3 col = vec3(0.0);
+    float t = 1e3;
+    if (tL > 0.0 && (tF < 0.0 || tL < tF)) {
+        t = tL;
+        col = latticeColor(ro + rd * t, nor, rd);
+    } else if (tF > 0.0) {
+        col = shadeFloor(ro, rd, tF, pixAngle, t);
+    }
+    return vec4(col, t * dot(rd, fwd));
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec3 col = vec3(0.0);
+    for (int j = 0; j < AA; j++)
+        for (int i = 0; i < AA; i++)
+            col += render(fragCoord + (vec2(i, j) + 0.5) / float(AA) - 0.5).rgb;
+    // depth from the pixel centre: the DOF pass needs one depth per pixel
+    fragColor = vec4(col / float(AA * AA), render(fragCoord).a);
+}

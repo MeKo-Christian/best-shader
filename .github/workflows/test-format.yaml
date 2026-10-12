@@ -1,0 +1,27 @@
+name: test-format
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup just
+        uses: extractions/setup-just@v3
+
+      - name: Install formatters and linters
+        run: just setup-deps
+
+      - name: Run treefmt
+        run: just check-formatted

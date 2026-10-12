@@ -1,0 +1,77 @@
+version = '2'
+
+[linters]
+default = 'all'
+disable = [
+  'depguard',
+  'exhaustive',
+  'exhaustruct',
+  'exhaustruct_v5',
+  'godox',
+  'gomodguard',
+  'ireturn',
+  'mnd',
+  'musttag',
+  'nlreturn',
+  'sqlclosecheck',
+  'wsl',
+]
+enable = ['gomodguard_v2', 'wsl_v5']
+
+[linters.settings]
+[linters.settings.tagliatelle]
+[linters.settings.tagliatelle.case]
+[linters.settings.tagliatelle.case.rules]
+json = 'camel'
+
+[linters.settings.varnamelen]
+# Short coordinate/size names are idiomatic in graphics code.
+ignore-names = ['ok', 'id', 'x', 'y', 'w', 'h', 'i', 'j', 't', 'x0', 'y0', 'x1', 'y1', 'dx', 'dy']
+
+[linters.settings.wsl_v5]
+allow-first-in-block = true
+allow-whole-block = false
+branch-max-lines = 2
+disable = ['decl']
+
+[linters.exclusions]
+generated = 'lax'
+presets = ['comments', 'common-false-positives', 'legacy', 'std-error-handling']
+paths = ['third_party$', 'builtin$', 'examples$']
+
+[[linters.exclusions.rules]]
+linters = ['gosec']
+text = 'G601:'
+
+[[linters.exclusions.rules]]
+# Image-processing math in imgstat uses conventional short names
+# (p = picture, a/b = OKLab axes, xx/xy/yy = tensor terms, ex/ey = energies).
+linters = ['varnamelen']
+path = '^cmd/imgstat/'
+
+[[linters.exclusions.rules]]
+linters = ['gochecknoglobals', 'gochecknoinits']
+path = '^(cmd/[^/]+/)?[^/]+\.go$' # the root package and cmd/* are CLIs
+
+[[linters.exclusions.rules]]
+linters = ['err113', 'wrapcheck']
+path = '^(cmd/[^/]+/)?[^/]+\.go$'
+
+[[linters.exclusions.rules]]
+# A CLI tool prints to stdout/stderr on purpose.
+linters = ['forbidigo']
+path = '^(cmd/[^/]+/)?[^/]+\.go$'
+
+[severity]
+default = 'warn'
+
+[[severity.rules]]
+linters = ['exhaustive', 'exhaustruct', 'exhaustruct_v5', 'godox']
+severity = 'info'
+
+[formatters]
+enable = ['gci', 'gofumpt', 'goimports']
+
+[formatters.exclusions]
+generated = 'lax'
+paths = ['third_party$', 'builtin$', 'examples$']
