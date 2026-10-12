@@ -1,14 +1,16 @@
 # Best Shader
 
 A tiled marble floor in front of a rule-based beam lattice, and on the floor a
-ball of polished marble cubes that bounces slowly, squashing like a rubber
-ball on every landing: as a regular cubed sphere it touches the floor three
-times, the third time deeper, winding up, then jumps twice as high: on the way
-up its cubes turn irregular about the centre, most at the top, and on the way
-down they return, regular again as it lands (8.5 s). The scene loops over two
-bounce loops (17 s): the camera goes round an ellipse, right low and back left
-high, turning to keep the ball in place and focusing on its centre, and the
-orange, red and purple lights pass their colours round (`-D MOOD=0`: white).
+ball of milky glass cubes, faintly tinted in the palette (`-D GLASS=0`:
+polished marble), that bounces slowly,
+squashing like a rubber ball on every landing: as a regular cubed sphere it
+touches the floor three times, the third time deeper, winding up, then jumps
+twice as high: on the way up its cubes turn irregular about the centre, most
+at the top, and on the way down they return, regular again as it lands
+(8.5 s). The scene loops over two bounce loops (17 s): the camera goes round
+an ellipse, right low and back left high, turning to keep the ball in place
+and focusing on its centre, and the orange, red and purple lights pass their
+colours round (`-D MOOD=0`: white).
 Rendered by a Shadertoy-compatible Go runner; `imgstat` compares renders with
 the reference images.
 

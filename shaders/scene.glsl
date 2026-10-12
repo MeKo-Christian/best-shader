@@ -5,7 +5,7 @@
 //
 // Geometry: a tiled floor (y = 0) in front of a cubic beam lattice whose
 // region and beams come from lattice.glsl, and on the floor a ball of
-// polished marble cubes that turns from regular to irregular and back
+// milky glass cubes that turns from regular to irregular and back
 // (sphere.glsl). The lattice shares the floor's
 // orientation: its cells are CELL_TILES x CELL_TILES tiles and its joints
 // stand on tile joint crossings, so we see it at about 45 degrees. A world ray
@@ -53,12 +53,21 @@
 //   -D LIGHT_Z=10.0
 //   -D MOOD=1          0: white light and sky; 1: an orange key light, a red
 //                      rim light from the right and a purple sky
+//   -D LIGHT_SAT=0.35  saturation of the MOOD 1 light colours (1: the full
+//                      palette, 0: grey)
 //   -D RIM_X=7.5       rim light position (world, MOOD 1)
 //   -D RIM_Y=2.0
 //   -D RIM_Z=11.0
 //   -D RIM_R=1.0       radius of the rim light
 //
 // Cube ball (motion and placement in sphere.glsl):
+//   -D GLASS=1          1: milky glass cubes; 0: polished marble
+//   -D GLASS_DENSITY=2.5 how fast the milk hides the view through a cube
+//                       (per cube edge; the light passes exp(-density path))
+//   -D GLASS_LAYERS=3   most cubes a camera ray passes through
+//   -D GLASS_TINT=0.3   saturation of the cubes' glass colours (the palette)
+//   -D SPH_OPACITY=0.7  share of the light a glass cube stops in shadows
+//                       and occlusion (1 for marble)
 //   -D CUBE_ALBEDO=0.66 mean albedo of the cube marble (the floor's)
 //   -D CUBE_ROUGH=0.06  GGX roughness of the polished cubes
 //   -D SPH_DEBUG        shows how many cubes each pixel tests (green to red,
@@ -157,11 +166,29 @@
 #ifndef RIM_R
 #define RIM_R 1.0
 #endif
+#ifndef LIGHT_SAT
+#define LIGHT_SAT 0.35
+#endif
 #ifndef CUBE_ALBEDO
 #define CUBE_ALBEDO 0.66
 #endif
 #ifndef CUBE_ROUGH
 #define CUBE_ROUGH 0.06
+#endif
+#ifndef GLASS
+#define GLASS 1
+#endif
+#ifndef GLASS_DENSITY
+#define GLASS_DENSITY 2.5
+#endif
+#ifndef GLASS_TINT
+#define GLASS_TINT 0.3
+#endif
+#ifndef GLASS_LAYERS
+#define GLASS_LAYERS 3
+#endif
+#if GLASS && !defined(SPH_OPACITY)
+#define SPH_OPACITY 0.7
 #endif
 
 // Floor grid phase relative to the camera, in tiles (from the fit).
@@ -188,17 +215,21 @@ const float SCENE_LOOP = 2.0 * SPH_PERIOD;
 // Colours of the key light, the sky and the rim light (linear RGB), set per
 // frame by lightsPrepare().
 vec3 KEY_COL = vec3(1.0), SKY_COL = vec3(1.0), RIM_COL = vec3(0.0);
+
+// The palette of the scene, of about equal brightness: orange, red, purple.
+const vec3 PALETTE[3] = vec3[3](vec3(1.6, 0.52, 0.08), vec3(2.6, 0.09, 0.06), vec3(1.1, 0.33, 2.5));
+
 #if MOOD == 1
 const vec3 rimPos = vec3(RIM_X, RIM_Y, RIM_Z);
 
-// The palette the lights go round, of about equal brightness: orange, red,
-// purple; x in rounds. Each colour holds for a while and then blends into the
-// next, since the blends are pale.
+// The lights go round the palette, toned down to LIGHT_SAT at the same
+// luminance; x in rounds. Each colour holds for a while and then blends into
+// the next, since the blends are pale.
 vec3 moodColour(float x) {
-    const vec3 c[3] = vec3[3](vec3(1.6, 0.52, 0.08), vec3(2.6, 0.09, 0.06), vec3(1.1, 0.33, 2.5));
     x = fract(x) * 3.0;
     int i = int(x);
-    return mix(c[i], c[(i + 1) % 3], smoothstep(0.4, 1.0, fract(x)));
+    vec3 c = mix(PALETTE[i], PALETTE[(i + 1) % 3], smoothstep(0.4, 1.0, fract(x)));
+    return mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, LIGHT_SAT);
 }
 #endif
 
@@ -552,7 +583,7 @@ vec3 rimShade(vec3 p, vec3 n, vec3 v, float diff, float rough, int skip) {
     float nl = max(dot(n, l), 0.0);
     if (nl <= 0.0) return vec3(0.0);
     float I = 2.0 / (1.0 + dist * dist / 600.0);
-    float vis = sphereLightVisUncached(p + n * 1e-3, rimPos, RIM_R, skip);
+    float vis = sphereLightVis(p + n * 1e-3, rimPos, RIM_R, skip, 1);
     return RIM_COL * (0.85 * I * nl * vis) * (diff + PI * ggxLight(n, v, l, dist, rough));
 }
 #endif
@@ -586,7 +617,7 @@ vec3 shadeFloor(vec3 ro, vec3 rd, float t0, float cone, out float tHit) {
         shadow = slabShadow(s + ns * 0.002, tileDir(l), dist / LIGHT_R);
         vec2 xi = hash22(floor(rd.xy / cone * 2.0));   // per AA sample: seeded by the ray
         if (shadow > 0.0) shadow *= latticeShadow(p + n * 1e-3, xi);
-        if (shadow > 0.0) shadow *= sphereLightVis(p + n * 1e-3, lightPos, LIGHT_R, -1);
+        if (shadow > 0.0) shadow *= sphereLightVis(p + n * 1e-3, lightPos, LIGHT_R, -1, 0);
     }
     float sky = slabSky(s, ns) * latticeSky(p) * sphereSky(p);
 
@@ -603,11 +634,10 @@ vec3 shadeFloor(vec3 ro, vec3 rd, float t0, float cone, out float tHit) {
 }
 
 // ---- cube ball --------------------------------------------------------------
-// Polished marble: every face is cut from its own part of the block, at the
-// floor's physical scale, under a tight GGX lobe. The cubes see the sphere
-// light (shadowed by the other cubes), the sky above and the lit floor
-// below, and mirror the two in their Fresnel reflection. Inside the shell
-// the cubes close in: a face looking into the ball sees its dark hollow.
+// The cubes see the sphere light (shadowed by the other cubes), the sky above
+// and the lit floor below, and mirror the two in their Fresnel reflection.
+// Inside the shell the cubes close in: a face looking into the ball sees its
+// dim hollow.
 
 // Radiance of the floor (in units of the ambient terms) at the floor point
 // q: its marble under the sky and the light, which the ball, taken as a
@@ -628,17 +658,108 @@ vec3 floorGlow(vec3 q) {
     return c;
 }
 
-// Per pixel caches of the cube terms that vary slowly over a face.
-int aoKey = -1;
-float aoVal;
+// Sky occlusion of a cube face by its neighbours (sphereOcclusion), once per
+// pixel and face: a camera sample may pass through cubes, so the last few
+// faces are kept.
+#define AO_CACHE 4
+int aoKey[AO_CACHE] = int[AO_CACHE](-1, -1, -1, -1);
+float aoVal[AO_CACHE];
+int aoNext = 0;
+float cubeOpen(vec3 p, vec3 n, int id, int face) {
+    int key = id * 8 + face;
+    for (int k = 0; k < AO_CACHE; k++)
+        if (aoKey[k] == key) return aoVal[k];
+    float v = clamp(1.0 - sphereOcclusion(p, n, id), 0.0, 1.0);
+    aoKey[aoNext] = key;
+    aoVal[aoNext] = v;
+    aoNext = (aoNext + 1) % AO_CACHE;
+    return v;
+}
 
-// lp: hit point in cube space, id: the cube.
-vec3 shadeCube(vec3 p, vec3 n, vec3 rd, int id, vec3 lp, float cone, float t) {
+// Ambient light of a cube face (sky above, floor below, where the face looks:
+// the floor patch about as far out as the face is high) and the environment
+// its mirror image shows. hollow: how dim the inside of the ball is.
+void cubeAmbient(vec3 p, vec3 n, vec3 rd, int id, int face, float hollow, out vec3 ambient, out vec3 env) {
+    float I = 2.0 / (1.0 + dot(lightPos - p, lightPos - p) / 600.0);
+    float open = cubeOpen(p, n, id, face) * mix(hollow, 1.0, 0.5 + 0.5 * dot(n, normalize(p - sphO)));
+    float up = 0.5 + 0.5 * n.y;
+    vec3 glow = floorGlow(vec3(p.x + n.x * p.y, 0.0, p.z + n.z * p.y));
+    ambient = (0.15 * I * up * SKY_COL + glow * (1.0 - up)) * open;
+    vec3 r = reflect(rd, n);
+    env = (r.y > 0.0 ? 0.15 * I * SKY_COL : floorGlow(vec3(p.x + r.x * p.y / max(-r.y, 0.05), 0.0, p.z + r.z * p.y / max(-r.y, 0.05)))) * open;
+}
+
+#if GLASS
+// Milky glass: a smooth glass surface over a body that scatters the light.
+// Light taken in anywhere leaves the cube diffused, so a face in shadow still
+// glows, most near the lit faces and towards the eye when the light stands
+// behind the cube. The milk replaces the view through the cube by
+// 1 - exp(-GLASS_DENSITY T), T the path through the cube along the refracted
+// ray, so the thin rounded edges stay clearer. Every cube is tinted in one
+// of the palette colours, which colours its glow and the view through it.
+const vec3 MILK_EXT = vec3(0.88, 1.0, 1.15);       // relative extinction
+
+// Glass colour of cube id: a palette colour, GLASS_TINT saturated.
+vec3 cubeTint(int id) {
+    vec3 c = PALETTE[int(3.0 * hash12(vec2(float(id), 41.7)))];
+    return mix(vec3(1.0), c / max(c.r, max(c.g, c.b)), GLASS_TINT);
+}
+
+// One sphere light (centre lc, radius lr, cache slot, colour) on a glass
+// cube: the glow it gives the milk and its highlight on the surface.
+void glassLight(vec3 p, vec3 n, vec3 rd, int id, vec3 lc, float lr, int slot, vec3 col, inout vec3 glow, inout vec3 spec) {
+    vec3 L = lc - p;
+    float dist = length(L);
+    vec3 l = L / dist;
+    float I = 2.0 / (1.0 + dist * dist / 600.0);     // as in lightAt()
+    vec3 E = 0.85 * I * sphereLightVis(p + n * 1e-3, lc, lr, id, slot) * col;
+    float nl = max(dot(n, l), 0.0);
+    glow += E * (0.15 + 0.4 * nl + 0.6 * pow(max(dot(rd, l), 0.0), 3.0));
+    spec += E * nl * PI * ggxLight(n, -rd, l, dist, CUBE_ROUGH);
+}
+
+// lp: hit point in cube space, id: the cube. pass: the share of what lies
+// behind the cube that the view through it keeps.
+vec3 shadeCube(vec3 p, vec3 n, vec3 rd, int id, vec3 lp, float cone, float t, out vec3 pass) {
+    vec3 a = abs(lp);
+    int ax = a.x > a.y && a.x > a.z ? 0 : a.y > a.z ? 1 : 2;
+    int face = 2 * ax + int(lp[ax] > 0.0);
+
+    // path through the cube along the refracted ray (cube space)
+    vec3 c;
+    mat3 m;
+    cubePose(id, c, m);
+    vec3 d = refract(ballDir(rd) * m, roundCubeNormal(lp), 1.0 / 1.5);
+    d += 1e-7 * step(abs(d), vec3(1e-7));
+    vec3 tf = (0.5 * sign(d) - lp) / d;
+    float T = max(min(min(tf.x, tf.y), tf.z), 0.0);
+    vec3 milk = 1.0 - exp(-GLASS_DENSITY * T * MILK_EXT);
+
+    vec3 glow = vec3(0.0), spec = vec3(0.0);
+    glassLight(p, n, rd, id, lightPos, LIGHT_R, 0, KEY_COL, glow, spec);
+#if MOOD == 1
+    glassLight(p, n, rd, id, rimPos, RIM_R, 1, RIM_COL, glow, spec);
+#endif
+    // light comes into the hollow through the cubes
+    vec3 ambient, env;
+    cubeAmbient(p, n, rd, id, face, 0.5, ambient, env);
+
+    vec3 tint = cubeTint(id);
+    float Fs = envFresnel(max(dot(n, -rd), 1e-3), CUBE_ROUGH);
+    pass = (1.0 - Fs) * (1.0 - milk) * tint;
+    return (1.0 - Fs) * milk * 0.92 * tint * (glow + ambient) + spec + Fs * env;
+}
+#else
+// Polished marble: every face is cut from its own part of the block, at the
+// floor's physical scale, under a tight GGX lobe.
+// lp: hit point in cube space, id: the cube. pass: nothing shows through.
+vec3 shadeCube(vec3 p, vec3 n, vec3 rd, int id, vec3 lp, float cone, float t, out vec3 pass) {
+    pass = vec3(0.0);
     vec3 a = abs(lp);
     int ax = a.x > a.y && a.x > a.z ? 0 : a.y > a.z ? 1 : 2;
     vec2 uv = ax == 0 ? lp.yz : ax == 1 ? lp.zx : lp.xy;
-    float face = float(2 * ax) + step(0.0, lp[ax]);
-    vec2 cell = vec2(float(id) * 6.0 + face, 517.0);
+    int face = 2 * ax + int(lp[ax] > 0.0);
+    vec2 cell = vec2(float(id * 6 + face), 517.0);
     vec2 q = cell + 0.5 + uv * (SPH_SCALE / TILE);
     float albedo = marble(vec3(q.x, 0.0, q.y), cone * t / TILE) * (CUBE_ALBEDO / ALBEDO);
 
@@ -648,25 +769,11 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 rd, int id, vec3 lp, float cone, float t) {
     vec3 l = L / dist;
     float I = 2.0 / (1.0 + dist * dist / 600.0);     // as in lightAt()
     float nl = max(dot(n, l), 0.0);
-    float shadow = nl > 0.0 ? sphereLightVis(p + n * 1e-3, lightPos, LIGHT_R, id) : 0.0;
+    float shadow = nl > 0.0 ? sphereLightVis(p + n * 1e-3, lightPos, LIGHT_R, id, 0) : 0.0;
 
-    // Sky light: the neighbours close in on it (sphereOcclusion), and a face
-    // turned into the ball looks into its dim hollow. Below, a face sees the
-    // floor, where it looks: the patch about as far out as the face is high.
-    int key = id * 8 + int(face);
-    if (key != aoKey) {
-        aoKey = key;
-        aoVal = clamp(1.0 - sphereOcclusion(p, n, id), 0.0, 1.0);
-    }
-    float open = aoVal * mix(0.2, 1.0, 0.5 + 0.5 * dot(n, normalize(p - sphO)));
-    float up = 0.5 + 0.5 * n.y;
-    vec3 glow = floorGlow(vec3(p.x + n.x * p.y, 0.0, p.z + n.z * p.y));
-    vec3 ambient = (0.15 * I * up * SKY_COL + glow * (1.0 - up)) * open;
-
-    vec3 r = reflect(rd, n);
-    vec3 env = (r.y > 0.0 ? 0.15 * I * SKY_COL : floorGlow(vec3(p.x + r.x * p.y / max(-r.y, 0.05), 0.0, p.z + r.z * p.y / max(-r.y, 0.05)))) * open;
-    float nv = max(dot(n, v), 1e-3);
-    float Fs = envFresnel(nv, CUBE_ROUGH);
+    vec3 ambient, env;
+    cubeAmbient(p, n, rd, id, face, 0.2, ambient, env);
+    float Fs = envFresnel(max(dot(n, v), 1e-3), CUBE_ROUGH);
     float direct = 0.85 * I * nl * shadow;
     float spec = ggxLight(n, v, l, dist, CUBE_ROUGH);
     vec3 col = albedo * (1.0 - Fs) * (direct * KEY_COL + ambient) + PI * spec * direct * KEY_COL + Fs * env;
@@ -675,6 +782,7 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 rd, int id, vec3 lp, float cone, float t) {
 #endif
     return col;
 }
+#endif
 
 // The camera of the frame, set by cameraPrepare(): position, optical axis,
 // the image axes (rolled) and the focus distance (eye-space depth).
@@ -717,11 +825,11 @@ void cameraRay(vec2 fragCoord, out vec3 ro, out vec3 rd, out vec3 fwd) {
     rd += 1e-6 * step(abs(rd), vec3(1e-6)); // keep 1/rd finite
 }
 
-// What the last render() call hit.
+// Whether the last render() call hit the ball first.
 bool hitBall;
 
 // The first lattice trace of a pixel the ball covers in part: further camera
-// samples there that slip between the cubes reuse it. The lattice behind
+// samples there that slip between or through the cubes reuse it. The lattice behind
 // the ball is far out of focus, which hides the aliasing, as for the
 // single-sampled blurred lattice pixels in mainImage().
 bool latCached = false;
@@ -730,44 +838,56 @@ vec3 latCacheCol;
 
 // Colour and eye-space depth for one camera ray; spp is the number of samples
 // per pixel axis, which sets the footprint each sample filters over.
-// (mainImage() hands the depth on in units of the focus distance.)
+// (mainImage() hands the depth on in units of the focus distance.) The ray
+// passes on through glass cubes, unbent: the milk hides the small shift.
 vec4 render(vec2 fragCoord, float spp) {
     vec3 ro, rd, fwd;
     cameraRay(fragCoord, ro, rd, fwd);
     float cone = 2.0 / (iResolution.y * FOCAL * spp);
 
     vec3 nor, lp;
-    int id;
+    int id = -1;
     // (the floor further out than a few thousand units is lost behind the
     // lattice, and its shading breaks down there)
     float tF = rd.y < -1e-3 ? -ro.y / rd.y : 1e9;
-    float tS = sphereHit(ro, rd, nor, id, lp);
-    if (tS < 0.0) tS = 1e9;
 
-    // The ball stands in front of the lattice, so a cube hit needs no
-    // lattice trace.
-    hitBall = tS < tF;
-    if (hitBall) return vec4(shadeCube(ro + rd * tS, nor, rd, id, lp, cone, tS), tS * dot(rd, fwd));
+    // The ball stands in front of the lattice: once nothing shows through the
+    // cubes, the ray needs no lattice trace.
+    vec3 col = vec3(0.0), pass = vec3(1.0);
+    float depth = -1.0, tS = 0.0;
+    hitBall = false;
+    for (int k = 0; k < GLASS_LAYERS; k++) {
+        tS = sphereHit(ro, rd, id, tS, nor, id, lp);
+        if (tS < 0.0 || tS >= tF) break;
+        if (k == 0) {
+            hitBall = true;
+            depth = tS * dot(rd, fwd);
+        }
+        vec3 through;
+        col += pass * shadeCube(ro + rd * tS, nor, rd, id, lp, cone, tS, through);
+        pass *= through;
+        if (max(pass.r, max(pass.g, pass.b)) < 0.01) return vec4(col, depth);
+    }
 
     float tL;
-    vec3 col = vec3(0.0);
+    vec3 bg = vec3(0.0);
     if (latCached) {
         tL = latCacheT;
-        col = latCacheCol;
+        bg = latCacheCol;
     } else {
         tL = latticeHit(ro, rd, nor);
         if (tL < 0.0) tL = 1e9;
-        else col = latticeColor(ro + rd * tL, nor, rd);
+        else bg = latticeColor(ro + rd * tL, nor, rd);
         if (sphNCand > 0) {
             latCached = true;
             latCacheT = tL;
-            latCacheCol = col;
+            latCacheCol = bg;
         }
     }
     float t = 1e3;
     if (tL < tF) t = tL;
-    else if (tF < 1e9) col = shadeFloor(ro, rd, tF, cone, t);
-    return vec4(col, t * dot(rd, fwd));
+    else if (tF < 1e9) bg = shadeFloor(ro, rd, tF, cone, t);
+    return vec4(col + pass * bg, hitBall ? depth : t * dot(rd, fwd));
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {

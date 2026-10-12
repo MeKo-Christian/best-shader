@@ -4,8 +4,15 @@
 //
 // Units here are cube edges, in ball space: origin at the ball centre, y up.
 // SPH_SCALE converts to world units, SPH_YAW turns the ball about y.
+//
+// SPH_OPACITY is the share of the light a cube stops (1: solid; milky glass
+// passes the rest on, diffused); define it before including this file.
 
 #include "sphere_data.glsl"
+
+#ifndef SPH_OPACITY
+#define SPH_OPACITY 1.0
+#endif
 
 const float SPH_RHO = 0.8660254;  // circumradius of a cube
 const float SPH_REQ = 0.6203505;  // radius of the sphere of equal volume
@@ -136,29 +143,33 @@ void sphereCandidates(vec3 ro, vec3 rd, float spread) {
     }
 }
 
-// Nearest cube hit of a camera ray of this pixel (t > 0, world normal) or -1.
-// id is the cube, lp the hit point in cube space (edge 1, centred).
-float sphereHit(vec3 ro, vec3 rd, out vec3 nor, out int id, out vec3 lp) {
+// Nearest cube hit of a camera ray of this pixel (world normal) or -1, past
+// the hit tMin (world) on the cube skip: the cubes do not overlap, so the
+// cubes along a ray follow one another. id is the cube, lp the hit point in
+// cube space (edge 1, centred).
+float sphereHit(vec3 ro, vec3 rd, int skip, float tMin, out vec3 nor, out int id, out vec3 lp) {
     nor = vec3(0.0);
     id = -1;
     lp = vec3(0.0);
     if (sphNCand == 0) return -1.0;
     vec3 bro = toBall(ro), brd = ballDir(rd);
+    tMin /= SPH_SCALE;
 
     float tBest = 1e9;
     for (int k = 0; k < sphNCand; k++) {
         int i = sphCand[k];
+        if (i == skip) continue;
         vec3 oc = bro - sphCandC[k];
         float b = dot(oc, brd);
         float h = b * b - dot(oc, oc) + SPH_RHO * SPH_RHO;
-        if (h < 0.0 || -b - sqrt(h) > tBest || -b + sqrt(h) < 0.0) continue;
+        if (h < 0.0 || -b - sqrt(h) > tBest || -b + sqrt(h) < tMin) continue;
         vec3 c;
         mat3 m;
         cubePose(i, c, m);
         vec3 p = (bro - c) * m, d = brd * m;   // into cube space
         d += 1e-7 * step(abs(d), vec3(1e-7));
         float t = roundCubeHit(p, d);
-        if (t > 0.0 && t < tBest) {
+        if (t > tMin && t < tBest) {
             tBest = t;
             id = i;
             lp = p + d * t;
@@ -172,9 +183,10 @@ float sphereHit(vec3 ro, vec3 rd, out vec3 nor, out int id, out vec3 lp) {
 
 // Visibility of a sphere light (centre lc, radius lr, world) from the world
 // point p through the cubes, each taken as a sphere of equal volume: the
-// fraction of the light's disc not covered by their discs, multiplied over
-// the cubes. Noise free, so the wide penumbrae need no stochastic sampling.
-// The cube skip (the receiver itself) is left out.
+// fraction of the light's disc not covered by their discs (passing
+// 1 - SPH_OPACITY of it), multiplied over the cubes. Noise free, so the wide
+// penumbrae need no stochastic sampling. The cube skip (the receiver itself)
+// is left out.
 float sphereLightVisUncached(vec3 p, vec3 lc, float lr, int skip) {
     vec3 bp = toBall(p);
     vec3 L = ballDir(lc - p) / SPH_SCALE;
@@ -207,7 +219,7 @@ float sphereLightVisUncached(vec3 p, vec3 lc, float lr, int skip) {
                 float sep = length(cross(v, l)) / dist;   // angle between the discs
                 if (sep >= a + b) continue;
                 float cover = min(b * b / (a * a), 1.0) * (1.0 - smoothstep(abs(a - b), a + b, sep));
-                vis *= 1.0 - cover;
+                vis *= 1.0 - SPH_OPACITY * cover;
             }
         }
         if (vis < 1e-3) return 0.0;
@@ -215,23 +227,29 @@ float sphereLightVisUncached(vec3 p, vec3 lc, float lr, int skip) {
     return vis;
 }
 
-// The same, once per pixel and receiver (a cube, or -1 for the floor): the
-// penumbrae are far wider than a pixel, so the other camera samples that hit
-// the same receiver reuse it.
-int sphVisId = -2;
-float sphVis;
-float sphereLightVis(vec3 p, vec3 lc, float lr, int skip) {
-    if (skip != sphVisId) {
-        sphVis = sphereLightVisUncached(p, lc, lr, skip);
-        sphVisId = skip;
-    }
-    return sphVis;
+// The same, once per pixel, receiver (a cube, or -1 for the floor) and light
+// (slot 0 or 1): the penumbrae are far wider than a pixel, so the other camera
+// samples that hit the same receiver reuse it. A camera sample can pass
+// through cubes to more receivers, so the last few are kept.
+#define SPH_VIS_CACHE 8
+int sphVisKey[SPH_VIS_CACHE] = int[SPH_VIS_CACHE](-9, -9, -9, -9, -9, -9, -9, -9);
+float sphVisVal[SPH_VIS_CACHE];
+int sphVisNext = 0;
+float sphereLightVis(vec3 p, vec3 lc, float lr, int skip, int slot) {
+    int key = 2 * skip + slot;
+    for (int k = 0; k < SPH_VIS_CACHE; k++)
+        if (sphVisKey[k] == key) return sphVisVal[k];
+    float vis = sphereLightVisUncached(p, lc, lr, skip);
+    sphVisKey[sphVisNext] = key;
+    sphVisVal[sphVisNext] = vis;
+    sphVisNext = (sphVisNext + 1) % SPH_VIS_CACHE;
+    return vis;
 }
 
 // Sky occlusion of a point p (normal n, world) on cube skip by the cubes
 // near it, each taken as a sphere of equal volume: the sum of their view
 // factors (r / d)^2 cos(theta) where their centres lie above the point's
-// horizon. Cubes further than SPH_AO_RANGE are left out.
+// horizon, times SPH_OPACITY. Cubes further than SPH_AO_RANGE are left out.
 #define SPH_AO_RANGE 3.0
 float sphereOcclusion(vec3 p, vec3 n, int skip) {
     vec3 bp = toBall(p), bn = ballDir(n);
@@ -251,14 +269,14 @@ float sphereOcclusion(vec3 p, vec3 n, int skip) {
             }
         }
     }
-    return occ;
+    return SPH_OPACITY * occ;
 }
 
 // How much of the sky a floor point (normal up) loses to the ball: the view
 // factor of a sphere above the receiver, (R / d)^2 cos(theta), with R the
-// height of the ball centre when it rests on the floor, and the shell's
-// porosity.
-const float SPH_SOLID = 0.8;
+// height of the ball centre when it rests on the floor, the shell's
+// porosity and what the cubes pass.
+const float SPH_SOLID = 0.8 * SPH_OPACITY;
 float sphereSky(vec3 p) {
     vec3 v = sphO - p;
     float d2 = dot(v, v);
