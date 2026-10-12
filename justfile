@@ -95,8 +95,9 @@ shot times="0" *args:
 compare ref="reference/reference.png" times="0" *args:
     go run . -size {{size}} -shot out/shot.png -times {{times}} -compare {{ref}} {{args}}
 
-# Frame sequence (start and duration in seconds) into out/clip/, encoded as out/clip.mp4
-clip start="0" dur="12" fps="30" *args:
+# Frame sequence (start and duration in seconds) into out/clip/, encoded as out/clip.mp4;
+# the default is one loop of the ball (24 s) at 60 fps
+clip start="0" dur="24" fps="60" *args:
     rm -rf out/clip && mkdir -p out/clip
     go run . -size {{size}} -shot out/clip/f.png -time {{start}} -fps {{fps}} -frames $(awk 'BEGIN { print int({{dur}} * {{fps}} + 0.5) }') {{args}}
     ffmpeg -loglevel error -y -framerate {{fps}} -i out/clip/f_%05d.png -c:v libx264 -pix_fmt yuv420p -crf 16 out/clip.mp4
@@ -107,7 +108,7 @@ sheet dir="out/clip" every="15" grid="4x4" crop="iw:ih:0:0" width="480" out="out
     ffmpeg -loglevel error -y -i {{dir}}/f_%05d.png -vf "select='not(mod(n\,{{every}}))',crop={{crop}},scale={{width}}:-1,tile={{grid}}:padding=4" -frames:v 1 {{out}}
     @echo "wrote {{out}}"
 
-# Plan and verify the cube ball's motion, write shaders/sphere_data.glsl (flags: go run ./cmd/spheregen -h)
+# Check the cube ball's motion formula, write shaders/sphere_data.glsl (flags: go run ./cmd/spheregen -h)
 sphere *args:
     go run ./cmd/spheregen {{args}}
 
@@ -116,7 +117,7 @@ bench dur="3s" *args:
     go run . -bench {{dur}} -size 1280x720 {{args}}
     go run . -bench {{dur}} -size 2560x1440 {{args}}
 
-# Shadertoy export (multipass: plus out/shadertoy_bufferA.glsl), verified by rendering it back
+# Shadertoy export (multipass: plus out/shadertoy_bufferA.glsl, ..._bufferB.glsl), verified by rendering it back
 bundle *args:
     go run . -bundle out/shadertoy.glsl {{args}}
     go run . -shader out/shadertoy.glsl -shot out/shadertoy_check.png -time 15 -size {{size}}

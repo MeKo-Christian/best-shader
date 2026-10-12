@@ -21,10 +21,16 @@ type origin struct {
 type source struct {
 	lines    []string
 	origins  []origin
-	files    []string // every file that was read, in include order (for hot reload)
-	bufferA  string   // #bufferA path relative to the root, empty for single pass
-	bufferAt string   // "file:line" of the #bufferA directive, for errors
+	files    []string           // every file that was read, in include order (for hot reload)
+	buffers  [maxBuffers]string // #bufferA..#bufferD paths relative to the root, empty if not declared
+	bufferAt [maxBuffers]string // "file:line" of each #bufferX directive, for errors
 }
+
+// maxBuffers is the number of buffer passes Shadertoy offers (A to D).
+const maxBuffers = 4
+
+// bufferLetter is the letter of buffer k: 'A' for 0.
+func bufferLetter(k int) string { return string(rune('A' + k)) }
 
 func (s *source) String() string {
 	return strings.Join(s.lines, "\n") + "\n"
@@ -50,31 +56,33 @@ func (s *source) append(o *source) {
 
 var (
 	includeRe = regexp.MustCompile(`^\s*#\s*include\s+"([^"]+)"`)
-	// bufferRe matches `#bufferA "file"` and the commented form
+	// bufferRe matches `#bufferA "file"` (A to D) and the commented form
 	// `// #bufferA "file"` that bundles carry (Shadertoy ignores the comment).
-	bufferRe = regexp.MustCompile(`^\s*(?://\s*)?#\s*bufferA\s+"([^"]+)"`)
+	bufferRe = regexp.MustCompile(`^\s*(?://\s*)?#\s*buffer([A-D])\s+"([^"]+)"`)
 )
 
 // passSources is the preprocessed source of every pass of a shader.
 type passSources struct {
 	image   *source
-	bufferA *source // nil for single-pass shaders
+	buffers []*source // Buffer A, B, ... in render order; empty for single-pass shaders
 }
 
 // files lists every file read for any pass.
 func (p *passSources) files() []string {
 	files := p.image.files
-	if p.bufferA != nil {
-		files = append(slices.Clip(files), p.bufferA.files...)
+	for _, b := range p.buffers {
+		files = append(slices.Clip(files), b.files...)
 	}
 
 	return files
 }
 
-// loadPasses reads the Image shader at path and, if it declares
-// `#bufferA "file"`, the Buffer A shader, each with its includes inlined.
+// loadPasses reads the Image shader at path and the buffer shaders it
+// declares with `#bufferA "file"`, `#bufferB "file"`, ..., each with its
+// includes inlined. The buffers run in letter order before the Image pass;
+// they must be declared without gaps, starting at A.
 //
-// Include and #bufferA paths are relative to the file that names them and
+// Include and #bufferX paths are relative to the file that names them and
 // must stay inside the directory of the Image shader; files are read through
 // an os.Root, so they cannot escape it (neither via ".." nor via symlinks).
 // Within a pass each file is included at most once (pragma-once semantics),
@@ -91,19 +99,34 @@ func loadPasses(path string) (*passSources, error) {
 	defer root.Close()
 
 	err = srcs.image.include(root, dir, name, map[string]bool{})
-	if err != nil || srcs.image.bufferA == "" {
+	if err != nil {
 		return srcs, err
 	}
 
-	srcs.bufferA = &source{}
+	for k, rel := range srcs.image.buffers {
+		if rel == "" {
+			for j := k + 1; j < maxBuffers; j++ {
+				if srcs.image.buffers[j] != "" {
+					return srcs, fmt.Errorf("%s: #buffer%s without #buffer%s", srcs.image.bufferAt[j], bufferLetter(j), bufferLetter(k))
+				}
+			}
 
-	err = srcs.bufferA.include(root, dir, srcs.image.bufferA, map[string]bool{})
-	if err != nil {
-		return srcs, fmt.Errorf("%s: #bufferA: %w", srcs.image.bufferAt, err)
-	}
+			break
+		}
 
-	if srcs.bufferA.bufferA != "" {
-		return srcs, fmt.Errorf("%s: Buffer A cannot declare #bufferA itself", srcs.bufferA.bufferAt)
+		buf := &source{}
+		srcs.buffers = append(srcs.buffers, buf)
+
+		err = buf.include(root, dir, rel, map[string]bool{})
+		if err != nil {
+			return srcs, fmt.Errorf("%s: #buffer%s: %w", srcs.image.bufferAt[k], bufferLetter(k), err)
+		}
+
+		for j, at := range buf.bufferAt {
+			if at != "" {
+				return srcs, fmt.Errorf("%s: Buffer %s cannot declare #buffer%s itself", at, bufferLetter(k), bufferLetter(j))
+			}
+		}
 	}
 
 	return srcs, nil
@@ -129,12 +152,13 @@ func (s *source) include(root *os.Root, dir, rel string, seen map[string]bool) e
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
 	for i, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
 		if match := bufferRe.FindStringSubmatch(line); match != nil {
-			if s.bufferA != "" {
-				return fmt.Errorf("%s:%d: second #bufferA directive", path, i+1)
+			k := int(match[1][0] - 'A')
+			if s.buffers[k] != "" {
+				return fmt.Errorf("%s:%d: second #buffer%s directive", path, i+1, match[1])
 			}
 
-			s.bufferA = filepath.Join(filepath.Dir(rel), match[1])
-			s.bufferAt = fmt.Sprintf("%s:%d", path, i+1)
+			s.buffers[k] = filepath.Join(filepath.Dir(rel), match[2])
+			s.bufferAt[k] = fmt.Sprintf("%s:%d", path, i+1)
 
 			continue
 		}

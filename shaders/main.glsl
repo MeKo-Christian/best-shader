@@ -1,6 +1,8 @@
 // Best Shader - tiled floor in front of a rule-based cubic lattice.
 //
-// Buffer A (scene.glsl) renders the sharp scene with eye-space depth in alpha.
+// Buffer A (poses.glsl) evaluates the pose of every cube of the ball once per
+// frame; Buffer B (scene.glsl) reads them and renders the sharp scene with
+// eye-space depth in alpha.
 // This pass applies the camera depth of field as a scatter-as-gather bokeh
 // (after Dennis Gustafsson, "Bokeh depth of field in a single pass"): samples
 // on a golden-angle spiral contribute when their own circle of confusion
@@ -13,7 +15,8 @@
 //   -D APERTURE=6.0   blur radius in pixels (at 1254 px height) at infinity
 //   -D EXPOSURE=1.0   overall brightness
 
-// #bufferA "scene.glsl"
+// #bufferA "poses.glsl"
+// #bufferB "scene.glsl"
 
 #ifndef EXPOSURE
 #define EXPOSURE 1.0

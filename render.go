@@ -115,8 +115,9 @@ func buildProgram(body *source, defs defineList) (*program, error) {
 		rate: loc("iFrameRate"), frame: loc("iFrame"), mouse: loc("iMouse"), date: loc("iDate"),
 		channelRes: loc("iChannelResolution"),
 	}
-	// Channel N samples unit N. Only a multipass Image pass binds a texture
-	// (Buffer A on unit 0); every other unit stays empty and reads black.
+	// Channel N samples unit N. Only the passes after a buffer bind a texture
+	// (the previous buffer on unit 0); every other unit stays empty and reads
+	// black.
 	gl.UseProgram(id)
 
 	for i := range int32(4) {

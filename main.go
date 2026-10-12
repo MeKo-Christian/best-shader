@@ -172,9 +172,10 @@ func run(opt *options) error {
 }
 
 // writeBundle writes the Shadertoy export: opt.bundle for the Image pass and,
-// for multipass shaders, OUT_bufferA.glsl next to it for Buffer A. The Image
-// file names the Buffer A file in a `// #bufferA "..."` comment, so the
-// runner can render the bundle back with -shader while Shadertoy ignores it.
+// for multipass shaders, OUT_bufferA.glsl, OUT_bufferB.glsl, ... next to it.
+// The Image file names the buffer files in `// #bufferX "..."` comments, so
+// the runner can render the bundle back with -shader while Shadertoy ignores
+// them.
 func writeBundle(opt *options) error {
 	srcs, err := loadPasses(opt.shader)
 	if err != nil {
@@ -183,30 +184,46 @@ func writeBundle(opt *options) error {
 
 	header := fmt.Sprintf("// Bundled from %s by best-shader runner. Paste into Shadertoy's Image tab.\n", opt.shader)
 
-	if srcs.bufferA != nil {
-		bufPath := bufferBundlePath(opt.bundle)
-		bufName := filepath.Base(bufPath)
-		bufHeader := fmt.Sprintf("// Bundled from %s by best-shader runner. Paste into Shadertoy's Buffer A tab.\n",
-			srcs.bufferA.files[0])
+	if len(srcs.buffers) > 0 {
+		var tabs, directives strings.Builder
 
-		err = writeText(bufPath, bundle(srcs.bufferA, opt.defines, bufHeader))
-		if err != nil {
-			return err
+		for k, buf := range srcs.buffers {
+			bufPath := bufferBundlePath(opt.bundle, k)
+			bufName := filepath.Base(bufPath)
+			bufHeader := fmt.Sprintf("// Bundled from %s by best-shader runner. Paste into Shadertoy's %s tab.\n",
+				buf.files[0], passName(k))
+
+			if k > 0 {
+				bufHeader += "// Set" + channelHint(k-1)
+			}
+
+			err = writeText(bufPath, bundle(buf, opt.defines, bufHeader))
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(&tabs, "// - %s into the %s tab\n", bufName, passName(k))
+			fmt.Fprintf(&directives, "// #buffer%s \"%s\"\n", bufferLetter(k), bufName)
 		}
 
-		header += "// Multipass: paste " + bufName + " into the Buffer A tab, then set this tab's\n" +
-			"// iChannel0 to Buffer A with filter \"linear\" and wrap \"clamp\".\n" +
-			"// The next line is for the best-shader runner (-shader); Shadertoy ignores it.\n" +
-			"// #bufferA \"" + bufName + "\"\n"
+		header += "// Multipass: paste\n" + tabs.String() + "// and set" + channelHint(len(srcs.buffers)-1) +
+			"// The next lines are for the best-shader runner (-shader); Shadertoy ignores them.\n" +
+			directives.String()
 	}
 
 	return writeText(opt.bundle, bundle(srcs.image, opt.defines, header))
 }
 
-// bufferBundlePath turns "out/shadertoy.glsl" into "out/shadertoy_bufferA.glsl".
-func bufferBundlePath(imagePath string) string {
+// channelHint ends the sentence that binds a tab's iChannel0 to buffer k.
+func channelHint(k int) string {
+	return fmt.Sprintf(" this tab's iChannel0 to %s with filter \"linear\" and wrap \"clamp\".\n", passName(k))
+}
+
+// bufferBundlePath turns "out/shadertoy.glsl" into "out/shadertoy_bufferA.glsl"
+// for buffer 0, "..._bufferB.glsl" for buffer 1 and so on.
+func bufferBundlePath(imagePath string, k int) string {
 	ext := filepath.Ext(imagePath)
-	return strings.TrimSuffix(imagePath, ext) + "_bufferA" + ext
+	return strings.TrimSuffix(imagePath, ext) + "_buffer" + bufferLetter(k) + ext
 }
 
 // writeText writes text to path and reports it.
@@ -363,7 +380,7 @@ func runBench(opt *options, rend *renderer) error {
 
 	gl.Finish()
 
-	if pipe.bufferA != nil {
+	if len(pipe.buffers) > 0 {
 		rend.timer = newPassTimer()
 	}
 

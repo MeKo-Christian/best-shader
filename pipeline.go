@@ -8,20 +8,26 @@ import (
 	"github.com/go-gl/gl/v4.1-core/gl"
 )
 
-// Pass indices, used for timing and log messages.
+// Pass indices, used for timing and log messages: buffer k is pass k, the
+// Image pass comes last.
 const (
-	passBufferA = iota
-	passImage
-	numPasses
+	passImage = maxBuffers
+	numPasses = maxBuffers + 1
 )
 
-var passNames = [numPasses]string{"Buffer A", "Image"}
+func passName(pass int) string {
+	if pass == passImage {
+		return "Image"
+	}
+
+	return "Buffer " + bufferLetter(pass)
+}
 
 // pipeline is a compiled shader: the Image program plus, for multipass
-// shaders, the Buffer A program that feeds the Image pass's iChannel0.
+// shaders, the buffer programs that run before it.
 type pipeline struct {
 	image   *program
-	bufferA *program // nil for single-pass shaders
+	buffers []*program // Buffer A, B, ... in render order
 }
 
 func (p *pipeline) delete() {
@@ -30,7 +36,10 @@ func (p *pipeline) delete() {
 	}
 
 	p.image.delete()
-	p.bufferA.delete()
+
+	for _, b := range p.buffers {
+		b.delete()
+	}
 }
 
 // buildPipeline compiles every pass of srcs with the same defines. If any
@@ -43,12 +52,14 @@ func buildPipeline(srcs *passSources, defs defineList) (*pipeline, error) {
 
 	pipe := &pipeline{image: image}
 
-	if srcs.bufferA != nil {
-		pipe.bufferA, err = buildProgram(srcs.bufferA, defs)
+	for k, src := range srcs.buffers {
+		prog, err := buildProgram(src, defs)
 		if err != nil {
 			pipe.delete()
-			return nil, fmt.Errorf("%s pass: %w", passNames[passBufferA], err)
+			return nil, fmt.Errorf("%s pass: %w", passName(k), err)
 		}
+
+		pipe.buffers = append(pipe.buffers, prog)
 	}
 
 	return pipe, nil
@@ -69,21 +80,22 @@ func loadPipeline(opt *options) (*pipeline, []string, error) {
 	return pipe, files, err
 }
 
-// bufferFormat is the Buffer A render target: half float, so values above 1
-// and smooth gradients survive, sampled bilinearly and clamped at the edges
+// bufferFormat is the target of every buffer pass: 32-bit float like
+// Shadertoy's buffers, so values above 1, smooth gradients and data that
+// needs full precision survive; sampled bilinearly and clamped at the edges
 // like a Shadertoy buffer with filter "linear" and wrap "clamp".
-var bufferFormat = texFormat{internal: gl.RGBA16F, pixelType: gl.HALF_FLOAT, filter: gl.LINEAR}
+var bufferFormat = texFormat{internal: gl.RGBA32F, pixelType: gl.FLOAT, filter: gl.LINEAR}
 
 // renderer draws frames of a pipeline into the bound framebuffer. It owns the
-// Buffer A target and reallocates it whenever the render size changes.
+// buffer targets and reallocates them whenever the render size changes.
 //
-// Buffer A has no inputs today. Self-feedback would make bufferA a pair of
-// targets that swap after every frame (ping-pong): the pass reads the previous
-// frame from one while writing the other, and the Image pass reads the one just
-// written. Bind the read side to the Buffer A program's channel unit in draw.
+// The passes form a chain: each buffer reads the one before it on iChannel0
+// (Buffer A reads nothing), and the Image pass reads the last buffer. No pass
+// reads its own target, so there is no feedback yet; that would make a buffer
+// a pair of targets that swap after every frame (ping-pong).
 type renderer struct {
 	screen  *quad
-	bufferA *fbo
+	buffers []*fbo
 	timer   *passTimer // nil unless benchmarking
 }
 
@@ -92,17 +104,17 @@ func newRenderer() *renderer {
 }
 
 func (r *renderer) delete() {
-	if r.bufferA != nil {
-		r.bufferA.delete()
+	for _, b := range r.buffers {
+		b.delete()
 	}
 
 	r.timer.delete()
 	r.screen.delete()
 }
 
-// draw renders one frame of pipe into framebuffer out (0 = the window).
-// Buffer A (if any) is rendered first into its own target, then the Image
-// pass reads it on iChannel0. A nil pipeline just clears.
+// draw renders one frame of pipe into framebuffer out (0 = the window). The
+// buffers (if any) render first, each into its own target, then the Image
+// pass. A nil pipeline just clears.
 func (r *renderer) draw(pipe *pipeline, uni frameUniforms, out uint32) error {
 	gl.BindFramebuffer(gl.FRAMEBUFFER, out)
 
@@ -111,7 +123,7 @@ func (r *renderer) draw(pipe *pipeline, uni frameUniforms, out uint32) error {
 		return nil
 	}
 
-	if pipe.bufferA == nil || uni.width <= 0 || uni.height <= 0 {
+	if len(pipe.buffers) == 0 || uni.width <= 0 || uni.height <= 0 {
 		r.timer.begin(passImage)
 		r.screen.draw(pipe.image, uni)
 		r.timer.end()
@@ -119,29 +131,33 @@ func (r *renderer) draw(pipe *pipeline, uni frameUniforms, out uint32) error {
 		return nil
 	}
 
-	err := r.ensureBuffer(uni.width, uni.height)
+	err := r.ensureBuffers(len(pipe.buffers), uni.width, uni.height)
 	if err != nil {
 		return err
 	}
 
-	// Buffer A: nothing bound, so its iChannels read black and the pass never
-	// samples the texture it renders into.
-	gl.BindFramebuffer(gl.FRAMEBUFFER, r.bufferA.id)
+	// Buffer A gets nothing bound, so its iChannels read black; every later
+	// pass reads the previous target, never the one it renders into.
 	gl.ActiveTexture(gl.TEXTURE0)
-	gl.BindTexture(gl.TEXTURE_2D, 0)
-	r.timer.begin(passBufferA)
-	r.screen.draw(pipe.bufferA, uni)
-	r.timer.end()
 
-	// Image: Buffer A on iChannel0.
+	prev := uint32(0)
+	passUni := uni
+
+	for k, prog := range pipe.buffers {
+		gl.BindFramebuffer(gl.FRAMEBUFFER, r.buffers[k].id)
+		gl.BindTexture(gl.TEXTURE_2D, prev)
+		r.timer.begin(k)
+		r.screen.draw(prog, passUni)
+		r.timer.end()
+
+		prev = r.buffers[k].tex
+		passUni.channelRes[0] = [3]float32{float32(r.buffers[k].width), float32(r.buffers[k].height), 1}
+	}
+
 	gl.BindFramebuffer(gl.FRAMEBUFFER, out)
-	gl.BindTexture(gl.TEXTURE_2D, r.bufferA.tex)
-
-	imageUni := uni
-	imageUni.channelRes[0] = [3]float32{float32(r.bufferA.width), float32(r.bufferA.height), 1}
-
+	gl.BindTexture(gl.TEXTURE_2D, prev)
 	r.timer.begin(passImage)
-	r.screen.draw(pipe.image, imageUni)
+	r.screen.draw(pipe.image, passUni)
 	r.timer.end()
 
 	// Unbind again, so a single-pass shader loaded later reads black.
@@ -150,23 +166,26 @@ func (r *renderer) draw(pipe *pipeline, uni frameUniforms, out uint32) error {
 	return nil
 }
 
-// ensureBuffer (re)allocates the Buffer A target at w x h.
-func (r *renderer) ensureBuffer(w, h int) error {
-	if r.bufferA != nil && r.bufferA.width == w && r.bufferA.height == h {
+// ensureBuffers (re)allocates n buffer targets at w x h.
+func (r *renderer) ensureBuffers(n, w, h int) error {
+	if len(r.buffers) == n && r.buffers[0].width == w && r.buffers[0].height == h {
 		return nil
 	}
 
-	if r.bufferA != nil {
-		r.bufferA.delete()
-		r.bufferA = nil
+	for _, b := range r.buffers {
+		b.delete()
 	}
 
-	target, err := newFBO(w, h, bufferFormat)
-	if err != nil {
-		return fmt.Errorf("%s target: %w", passNames[passBufferA], err)
-	}
+	r.buffers = nil
 
-	r.bufferA = target
+	for k := range n {
+		target, err := newFBO(w, h, bufferFormat)
+		if err != nil {
+			return fmt.Errorf("%s target: %w", passName(k), err)
+		}
+
+		r.buffers = append(r.buffers, target)
+	}
 
 	return nil
 }
@@ -233,7 +252,7 @@ func (t *passTimer) summary() string {
 
 	for pass, el := range t.elapsed {
 		if el > 0 {
-			parts = append(parts, fmt.Sprintf("%s %.2f ms", passNames[pass], el.Seconds()*1000/float64(t.frames)))
+			parts = append(parts, fmt.Sprintf("%s %.2f ms", passName(pass), el.Seconds()*1000/float64(t.frames)))
 		}
 	}
 

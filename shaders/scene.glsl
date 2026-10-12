@@ -1,6 +1,7 @@
-// scene.glsl - Buffer A: the sharp scene, linear RGB plus eye-space depth in
-// alpha. The Image pass (main.glsl) turns depth into a circle of confusion and
-// applies the depth of field.
+// scene.glsl - Buffer B: the sharp scene, linear RGB plus eye-space depth in
+// alpha. It reads the cube poses from Buffer A (poses.glsl) on iChannel0. The
+// Image pass (main.glsl) turns depth into a circle of confusion and applies
+// the depth of field.
 //
 // Geometry: a tiled floor (y = 0) in front of a cubic beam lattice whose
 // region and beams come from lattice.glsl, and on the floor a ball of
@@ -527,7 +528,7 @@ vec3 shadeFloor(vec3 ro, vec3 rd, float t0, float cone, out float tHit) {
 float floorGlow(vec3 q) {
     vec3 L = lightPos - q, B = sphO - q;
     float D = length(L), dB = length(B);
-    float a = asin(min(LIGHT_R / D, 1.0)), b = asin(min(sphO.y / dB, 1.0));
+    float a = asin(min(LIGHT_R / D, 1.0)), b = asin(min(sphRad / dB, 1.0));
     float sep = acos(clamp(dot(L, B) / (D * dB), -1.0, 1.0));
     float cover = min(b * b / (a * a), 1.0) * (1.0 - smoothstep(abs(a - b), a + b, sep));
     float I = 2.0 / (1.0 + D * D / 600.0);
