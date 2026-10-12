@@ -11,7 +11,7 @@
 // All shading happens in linear RGB; linearToSrgb() encodes at the very end.
 //
 // Defines (scene and lattice defines are listed in scene.glsl/lattice.glsl):
-//   -D FOCUS=6.96     focus distance (eye-space depth), the front of the ball
+//   -D FOCUS=8.352    focus distance (eye-space depth), the front of the ball
 //   -D APERTURE=6.0   blur radius in pixels (at 1254 px height) at infinity
 //   -D EXPOSURE=1.0   overall brightness
 

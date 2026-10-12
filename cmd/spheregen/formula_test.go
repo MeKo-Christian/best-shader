@@ -10,9 +10,9 @@ func testParams() params {
 	p := params{
 		n: 7, bevel: 0.1, marg: 0.03, jitter: 0.02, warp: 0.05, offset: 0.1, tumble: 1.05,
 		rIrr: 5.6, rCap: 7.5, sink: 0.6, spread: 0.6, sweep: 0.7, period: 8.5,
-		hop: 0.216, big: 2, squash: 0.45, deep: 2, deepT: 1.5, splay: 0.3, top: 0.4, bulge: 0.6, damp: 2.5,
+		hop: 0.2592, big: 2, squash: 0.45, deep: 2, deepT: 1.5, splay: 0.3, top: 0.4, bulge: 0.6, damp: 2.5,
 	}
-	p.derive(1.776)
+	p.derive(2.1312)
 	return p
 }
 

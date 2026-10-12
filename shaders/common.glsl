@@ -9,7 +9,7 @@
 
 // ---- camera lens (both passes: Buffer A picks its sample count by it) --------
 #ifndef FOCUS
-#define FOCUS 6.96
+#define FOCUS 8.352
 #endif
 #ifndef APERTURE
 #define APERTURE 6.0
