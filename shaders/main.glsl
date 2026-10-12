@@ -2,7 +2,7 @@
 //
 // Buffer A (poses.glsl) evaluates the pose of every cube of the ball once per
 // frame; Buffer B (scene.glsl) reads them and renders the sharp scene with
-// eye-space depth in alpha.
+// eye-space depth in alpha, in units of the focus distance.
 // This pass applies the camera depth of field as a scatter-as-gather bokeh
 // (after Dennis Gustafsson, "Bokeh depth of field in a single pass"): samples
 // on a golden-angle spiral contribute when their own circle of confusion
@@ -11,7 +11,6 @@
 // All shading happens in linear RGB; linearToSrgb() encodes at the very end.
 //
 // Defines (scene and lattice defines are listed in scene.glsl/lattice.glsl):
-//   -D FOCUS=8.352    focus distance (eye-space depth), the front of the ball
 //   -D APERTURE=6.0   blur radius in pixels (at 1254 px height) at infinity
 //   -D EXPOSURE=1.0   overall brightness
 

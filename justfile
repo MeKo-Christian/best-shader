@@ -96,12 +96,13 @@ compare ref="reference/reference.png" times="0" *args:
     go run . -size {{size}} -shot out/shot.png -times {{times}} -compare {{ref}} {{args}}
 
 # Frame sequence (start and duration in seconds) into out/clip/, encoded as out/clip.mp4;
-# the default is one loop of the ball (SPH_PERIOD in shaders/sphere_data.glsl) at 60 fps
+# the default is one loop of the scene, two of the ball (SPH_PERIOD in shaders/sphere_data.glsl),
+# at 60 fps
 clip start="0" dur="loop" fps="60" *args:
     #!/usr/bin/env bash
     set -euo pipefail
     dur={{dur}}
-    if [ "$dur" = loop ]; then dur=$(awk '/SPH_PERIOD =/ { sub(";", "", $5); print $5 }' shaders/sphere_data.glsl); fi
+    if [ "$dur" = loop ]; then dur=$(awk '/SPH_PERIOD =/ { sub(";", "", $5); print 2 * $5 }' shaders/sphere_data.glsl); fi
     rm -rf out/clip && mkdir -p out/clip
     go run . -size {{size}} -shot out/clip/f.png -time {{start}} -fps {{fps}} -frames $(awk -v d="$dur" 'BEGIN { print int(d * {{fps}} + 0.5) }') {{args}}
     ffmpeg -loglevel error -y -framerate {{fps}} -i out/clip/f_%05d.png -c:v libx264 -pix_fmt yuv420p -crf 16 out/clip.mp4

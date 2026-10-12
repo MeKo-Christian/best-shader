@@ -10,7 +10,7 @@
 
 #define SPH_FACE 7
 const float SPH_SCALE = 0.283690;   // world units per cube edge
-const vec2 SPH_POS = vec2(1.0806, 9.7920); // ball centre x, z (world)
+const vec2 SPH_POS = vec2(1.0230, 8.1600); // ball centre x, z (world)
 const float SPH_YAW = 0.035279;     // ball turn about y (radians)
 const float SPH_BEVEL = 0.1000;    // edge radius
 const float SPH_MARG = 0.0300;     // clearance from the cone walls

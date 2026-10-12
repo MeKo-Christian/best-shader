@@ -32,6 +32,8 @@
 //   -D SHIFT_Y=-0.2029
 //   -D ROLL=-0.0927    camera roll in degrees
 //   -D PITCH=0.0       camera pitch in degrees (positive = up)
+//   -D CAM_DX=1.6      the camera goes round an ellipse this far either way
+//   -D CAM_DY=0.8      and this high (world), turning to keep the ball in place
 //   -D FADE=1.2        how fast light dies with depth inside the lattice
 //   -D AA=2            supersampling (AA x AA samples per pixel)
 //   -D AA_COC=1.5      blur radius in pixels above which a lattice pixel
@@ -49,6 +51,12 @@
 //   -D LIGHT_X=-2.0    light position (world): above the open room, fitted
 //   -D LIGHT_Y=6.0     to the brightness falloff of the reference floor
 //   -D LIGHT_Z=10.0
+//   -D MOOD=1          0: white light and sky; 1: an orange key light, a red
+//                      rim light from the right and a purple sky
+//   -D RIM_X=7.5       rim light position (world, MOOD 1)
+//   -D RIM_Y=2.0
+//   -D RIM_Z=11.0
+//   -D RIM_R=1.0       radius of the rim light
 //
 // Cube ball (motion and placement in sphere.glsl):
 //   -D CUBE_ALBEDO=0.66 mean albedo of the cube marble (the floor's)
@@ -89,6 +97,12 @@
 #ifndef PITCH
 #define PITCH 0.0
 #endif
+#ifndef CAM_DX
+#define CAM_DX 1.6
+#endif
+#ifndef CAM_DY
+#define CAM_DY 0.8
+#endif
 #ifndef FADE
 #define FADE 1.2
 #endif
@@ -128,6 +142,21 @@
 #ifndef LIGHT_Z
 #define LIGHT_Z 10.0
 #endif
+#ifndef MOOD
+#define MOOD 1
+#endif
+#ifndef RIM_X
+#define RIM_X 7.5
+#endif
+#ifndef RIM_Y
+#define RIM_Y 2.0
+#endif
+#ifndef RIM_Z
+#define RIM_Z 11.0
+#endif
+#ifndef RIM_R
+#define RIM_R 1.0
+#endif
 #ifndef CUBE_ALBEDO
 #define CUBE_ALBEDO 0.66
 #endif
@@ -152,6 +181,38 @@ const float LAT_DMAX = 6.0 / (FADE * CELL) + 1.0;
 
 // Light: a sphere light above the open room, in front of the camera.
 const vec3 lightPos = vec3(LIGHT_X, LIGHT_Y, LIGHT_Z);
+
+// The camera and the lights repeat every two loops of the ball.
+const float SCENE_LOOP = 2.0 * SPH_PERIOD;
+
+// Colours of the key light, the sky and the rim light (linear RGB), set per
+// frame by lightsPrepare().
+vec3 KEY_COL = vec3(1.0), SKY_COL = vec3(1.0), RIM_COL = vec3(0.0);
+#if MOOD == 1
+const vec3 rimPos = vec3(RIM_X, RIM_Y, RIM_Z);
+
+// The palette the lights go round, of about equal brightness: orange, red,
+// purple; x in rounds. Each colour holds for a while and then blends into the
+// next, since the blends are pale.
+vec3 moodColour(float x) {
+    const vec3 c[3] = vec3[3](vec3(1.6, 0.52, 0.08), vec3(2.6, 0.09, 0.06), vec3(1.1, 0.33, 2.5));
+    x = fract(x) * 3.0;
+    int i = int(x);
+    return mix(c[i], c[(i + 1) % 3], smoothstep(0.4, 1.0, fract(x)));
+}
+#endif
+
+// Over SCENE_LOOP the three lights pass the palette round once: at the start
+// the key light is orange, the rim light red and the sky purple, then each
+// takes on the colour of the next.
+void lightsPrepare() {
+#if MOOD == 1
+    float x = iTime / SCENE_LOOP;
+    KEY_COL = 1.2 * moodColour(x);
+    RIM_COL = 0.95 * moodColour(x + 1.0 / 3.0);
+    SKY_COL = 0.7 * moodColour(x + 2.0 / 3.0);
+#endif
+}
 
 // Cells near the lattice: the region grown by one cell, since beams on the
 // region's surface reach into the cells just outside it.
@@ -258,13 +319,20 @@ float traceLattice(vec3 ro, vec3 rd, out vec3 nor) {
     return tBest;
 }
 
-// Broad soft light: wrapped Lambert with a gentle distance falloff.
-float lightAt(vec3 p, vec3 n) {
+// Broad soft light: wrapped Lambert with a gentle distance falloff (the
+// wrap part is the sky), plus the unshadowed rim light.
+vec3 lightAt(vec3 p, vec3 n) {
     vec3 l = lightPos - p;
     float d = length(l);
     l /= d;
-    float diff = 0.15 + 0.85 * max(dot(n, l), 0.0);
-    return 2.0 * diff / (1.0 + d * d / 600.0);
+    vec3 diff = 0.15 * SKY_COL + 0.85 * KEY_COL * max(dot(n, l), 0.0);
+    vec3 c = 2.0 * diff / (1.0 + d * d / 600.0);
+#if MOOD == 1
+    vec3 r = rimPos - p;
+    float dr = length(r);
+    c += RIM_COL * 2.0 * 0.85 * max(dot(n, r / dr), 0.0) / (1.0 + dr * dr / 600.0);
+#endif
+    return c;
 }
 
 // p, n and rd in world space, lp is p in lattice space.
@@ -276,13 +344,13 @@ vec3 shadeLattice(vec3 p, vec3 n, vec3 rd, vec3 lp) {
     float ao = mix(0.55, 1.0, smoothstep(HB, HB + 0.3, along));
 
     float fade = exp(-FADE * CELL * max(latSdf(lp.xz), 0.0));
-    float light = lightAt(p, n);
+    vec3 light = lightAt(p, n);
 
     vec3 h = normalize(normalize(lightPos - p) - rd);
     float spec = 0.08 * pow(max(dot(n, h), 0.0), 24.0);
 
     float albedo = 0.5;
-    return vec3(albedo * light * ao + spec * light) * fade;
+    return (albedo * light * ao + spec * light) * fade;
 }
 
 // ---- lattice interface (world space) ---------------------------------------
@@ -474,6 +542,21 @@ float ggxLight(vec3 n, vec3 v, vec3 l, float dist, float rough) {
     return D * G * F / (4.0 * max(nl, 1e-3) * nv);
 }
 
+#if MOOD == 1
+// Diffuse (albedo diff) and GGX light of the rim light at p, shadowed by
+// the ball only (cube skip left out).
+vec3 rimShade(vec3 p, vec3 n, vec3 v, float diff, float rough, int skip) {
+    vec3 R = rimPos - p;
+    float dist = length(R);
+    vec3 l = R / dist;
+    float nl = max(dot(n, l), 0.0);
+    if (nl <= 0.0) return vec3(0.0);
+    float I = 2.0 / (1.0 + dist * dist / 600.0);
+    float vis = sphereLightVisUncached(p + n * 1e-3, rimPos, RIM_R, skip);
+    return RIM_COL * (0.85 * I * nl * vis) * (diff + PI * ggxLight(n, v, l, dist, rough));
+}
+#endif
+
 // Fresnel towards a uniform environment for a rough surface (Lagarde).
 float envFresnel(float nv, float rough) {
     return F0 + (max(1.0 - rough, F0) - F0) * pow(1.0 - nv, 5.0);
@@ -512,7 +595,11 @@ vec3 shadeFloor(vec3 ro, vec3 rd, float t0, float cone, out float tHit) {
     float Fs = envFresnel(max(dot(n, v), 1e-3), ROUGH);
     float direct = 0.85 * I * nl * shadow;
     float ambient = 0.15 * I * sky;
-    return vec3(albedo * (1.0 - Fs) * (direct + ambient) + PI * spec * direct + Fs * ambient);
+    vec3 col = albedo * (1.0 - Fs) * (direct * KEY_COL + ambient * SKY_COL) + PI * spec * direct * KEY_COL + Fs * ambient * SKY_COL;
+#if MOOD == 1
+    col += rimShade(p, n, v, albedo * (1.0 - Fs), ROUGH, -1);
+#endif
+    return col;
 }
 
 // ---- cube ball --------------------------------------------------------------
@@ -525,14 +612,20 @@ vec3 shadeFloor(vec3 ro, vec3 rd, float t0, float cone, out float tHit) {
 // Radiance of the floor (in units of the ambient terms) at the floor point
 // q: its marble under the sky and the light, which the ball, taken as a
 // porous sphere resting on the floor, partly hides.
-float floorGlow(vec3 q) {
+vec3 floorGlow(vec3 q) {
     vec3 L = lightPos - q, B = sphO - q;
     float D = length(L), dB = length(B);
     float a = asin(min(LIGHT_R / D, 1.0)), b = asin(min(sphRad / dB, 1.0));
     float sep = acos(clamp(dot(L, B) / (D * dB), -1.0, 1.0));
     float cover = min(b * b / (a * a), 1.0) * (1.0 - smoothstep(abs(a - b), a + b, sep));
     float I = 2.0 / (1.0 + D * D / 600.0);
-    return ALBEDO * I * (0.85 * max(L.y / D, 0.0) * (1.0 - SPH_SOLID * cover) + 0.15);
+    vec3 c = ALBEDO * I * (0.85 * max(L.y / D, 0.0) * (1.0 - SPH_SOLID * cover) * KEY_COL + 0.15 * SKY_COL);
+#if MOOD == 1
+    vec3 R = rimPos - q;
+    float dr = length(R);
+    c += ALBEDO * RIM_COL * 2.0 * 0.85 * max(R.y / dr, 0.0) / (1.0 + dr * dr / 600.0);
+#endif
+    return c;
 }
 
 // Per pixel caches of the cube terms that vary slowly over a face.
@@ -567,30 +660,60 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 rd, int id, vec3 lp, float cone, float t) {
     }
     float open = aoVal * mix(0.2, 1.0, 0.5 + 0.5 * dot(n, normalize(p - sphO)));
     float up = 0.5 + 0.5 * n.y;
-    float glow = floorGlow(vec3(p.x + n.x * p.y, 0.0, p.z + n.z * p.y));
-    float ambient = (0.15 * I * up + glow * (1.0 - up)) * open;
+    vec3 glow = floorGlow(vec3(p.x + n.x * p.y, 0.0, p.z + n.z * p.y));
+    vec3 ambient = (0.15 * I * up * SKY_COL + glow * (1.0 - up)) * open;
 
     vec3 r = reflect(rd, n);
-    float env = (r.y > 0.0 ? 0.15 * I : floorGlow(vec3(p.x + r.x * p.y / max(-r.y, 0.05), 0.0, p.z + r.z * p.y / max(-r.y, 0.05)))) * open;
+    vec3 env = (r.y > 0.0 ? 0.15 * I * SKY_COL : floorGlow(vec3(p.x + r.x * p.y / max(-r.y, 0.05), 0.0, p.z + r.z * p.y / max(-r.y, 0.05)))) * open;
     float nv = max(dot(n, v), 1e-3);
     float Fs = envFresnel(nv, CUBE_ROUGH);
     float direct = 0.85 * I * nl * shadow;
     float spec = ggxLight(n, v, l, dist, CUBE_ROUGH);
-    return vec3(albedo * (1.0 - Fs) * (direct + ambient) + PI * spec * direct + Fs * env);
+    vec3 col = albedo * (1.0 - Fs) * (direct * KEY_COL + ambient) + PI * spec * direct * KEY_COL + Fs * env;
+#if MOOD == 1
+    col += rimShade(p, n, v, albedo * (1.0 - Fs), CUBE_ROUGH, id);
+#endif
+    return col;
+}
+
+// The camera of the frame, set by cameraPrepare(): position, optical axis,
+// the image axes (rolled) and the focus distance (eye-space depth).
+vec3 camRo, camFwd, camRight, camUp;
+float camFocus;
+
+// Over SCENE_LOOP the camera goes once round an upright ellipse, CAM_DX
+// wide either way and CAM_DY high, from its lowest point, the fitted camera:
+// right on the low arc, back left on the high one. It turns with it so that
+// the resting ball stays where it is in the picture, and it focuses on the
+// ball's centre. Needs spherePrepare().
+void cameraPrepare() {
+    float a = TAU * iTime / SCENE_LOOP;
+    vec3 ro0 = vec3(CAM_X, CAM_H, 0.0);
+    camRo = ro0 + vec3(CAM_DX * sin(a), 0.5 * CAM_DY * (1.0 - cos(a)), 0.0);
+    // turn by the change of the direction to the resting ball
+    vec3 target = vec3(SPH_POS.x, sphRad, SPH_POS.y);
+    vec3 d0 = target - ro0, d = target - camRo;
+    float yaw = atan(d.x, d.z) - atan(d0.x, d0.z);
+    float pa = radians(PITCH) + atan(d.y, length(d.xz)) - atan(d0.y, length(d0.xz));
+    float ra = radians(ROLL);
+    vec3 fwd = vec3(0.0, sin(pa), cos(pa));
+    vec3 right = vec3(1.0, 0.0, 0.0);
+    vec3 up = cross(fwd, right);
+    vec2 cy = vec2(cos(yaw), sin(yaw));
+    camFwd = vec3(fwd.x * cy.x + fwd.z * cy.y, fwd.y, fwd.z * cy.x - fwd.x * cy.y);
+    up = vec3(up.x * cy.x + up.z * cy.y, up.y, up.z * cy.x - up.x * cy.y);
+    right = vec3(cy.x, 0.0, -cy.y);
+    camRight = right * cos(ra) + up * sin(ra);
+    camUp = up * cos(ra) - right * sin(ra);
+    camFocus = dot(sphO - camRo, camFwd);
 }
 
 // Camera ray through a pixel position; fwd is the optical axis.
 void cameraRay(vec2 fragCoord, out vec3 ro, out vec3 rd, out vec3 fwd) {
     vec2 uv = (2.0 * fragCoord - iResolution.xy) / iResolution.y - vec2(SHIFT_X, SHIFT_Y);
-
-    ro = vec3(CAM_X, CAM_H, 0.0);
-    float pa = radians(PITCH), ra = radians(ROLL);
-    fwd = vec3(0.0, sin(pa), cos(pa));
-    vec3 right = vec3(1.0, 0.0, 0.0);
-    vec3 up = cross(fwd, right);
-    vec3 r2 = right * cos(ra) + up * sin(ra);
-    vec3 u2 = up * cos(ra) - right * sin(ra);
-    rd = normalize(uv.x * r2 + uv.y * u2 + FOCAL * fwd);
+    ro = camRo;
+    fwd = camFwd;
+    rd = normalize(uv.x * camRight + uv.y * camUp + FOCAL * fwd);
     rd += 1e-6 * step(abs(rd), vec3(1e-6)); // keep 1/rd finite
 }
 
@@ -607,6 +730,7 @@ vec3 latCacheCol;
 
 // Colour and eye-space depth for one camera ray; spp is the number of samples
 // per pixel axis, which sets the footprint each sample filters over.
+// (mainImage() hands the depth on in units of the focus distance.)
 vec4 render(vec2 fragCoord, float spp) {
     vec3 ro, rd, fwd;
     cameraRay(fragCoord, ro, rd, fwd);
@@ -614,7 +738,9 @@ vec4 render(vec2 fragCoord, float spp) {
 
     vec3 nor, lp;
     int id;
-    float tF = rd.y < 0.0 ? -ro.y / rd.y : 1e9;
+    // (the floor further out than a few thousand units is lost behind the
+    // lattice, and its shading breaks down there)
+    float tF = rd.y < -1e-3 ? -ro.y / rd.y : 1e9;
     float tS = sphereHit(ro, rd, nor, id, lp);
     if (tS < 0.0) tS = 1e9;
 
@@ -646,6 +772,8 @@ vec4 render(vec2 fragCoord, float spp) {
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     spherePrepare();
+    cameraPrepare();
+    lightsPrepare();
     {
         // the cubes the camera samples of this pixel can meet (they stay
         // within 0.71 pixel of the centre ray)
@@ -669,8 +797,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     // pixel and would alias into moire that no blur removes.
     vec3 ro, rd, fwd;
     cameraRay(fragCoord, ro, rd, fwd);
-    float zFloor = rd.y < 0.0 ? -ro.y / rd.y * dot(rd, fwd) : 1e3;
+    float zFloor = rd.y < -1e-3 ? -ro.y / rd.y * dot(rd, fwd) : 1e3;
     bool lattice = !hitBall && (first.a < 0.99 * zFloor || zFloor >= 1e3);
+    first.a /= camFocus;
     if (lattice && cocRadius(first.a, iResolution.y / 1254.0) > AA_COC) {
         fragColor = first;
         return;

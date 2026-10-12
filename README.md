@@ -5,9 +5,12 @@ ball of polished marble cubes that bounces slowly, squashing like a rubber
 ball on every landing: as a regular cubed sphere it touches the floor three
 times, the third time deeper, winding up, then jumps twice as high: on the way
 up its cubes turn irregular about the centre, most at the top, and on the way
-down they return, regular again as it lands (one 8.5 s loop). Rendered by a
-Shadertoy-compatible Go runner; `imgstat` compares renders with the reference
-images.
+down they return, regular again as it lands (8.5 s). The scene loops over two
+bounce loops (17 s): the camera goes round an ellipse, right low and back left
+high, turning to keep the ball in place and focusing on its centre, and the
+orange, red and purple lights pass their colours round (`-D MOOD=0`: white).
+Rendered by a Shadertoy-compatible Go runner; `imgstat` compares renders with
+the reference images.
 
 Every cube pose is a closed formula of the cube's index and the time, with no
 tables. Each cube owns a cell of a cubed sphere, the cone from the ball centre
@@ -47,7 +50,7 @@ just run                  # window with hot reload (Space pauses, P saves a PNG)
 just shot 0,15            # offscreen frames into out/
 just bench                # frame time at 1280x720 and 2x
 just bundle               # Shadertoy export into out/shadertoy.glsl
-just clip                 # one loop of the ball (8.5 s) at 60 fps into out/clip.mp4
+just clip                 # one loop of the scene (17 s) at 60 fps into out/clip.mp4
 just sphere               # check the ball's formula, write shaders/sphere_data.glsl
 ```
 
