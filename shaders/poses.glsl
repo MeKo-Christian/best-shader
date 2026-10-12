@@ -5,7 +5,8 @@
 //   row 1, 2:                         its x and y axes (z = cross(x, y))
 //   row 3, column k < 54:             bounding sphere of cluster k (centre, radius)
 //   row 4, column 0:                  height of the ball centre above the floor
-//                                     at rest and with the hop (world)
+//                                     at rest (squashed, if on the floor) and
+//                                     with the bounce (world)
 // A cluster is a block of cells of a cube face, 3 x 3 blocks per face; the
 // scene tests a cluster's sphere before its cubes.
 
@@ -25,6 +26,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     const int n = 6 * SPH_FACE * SPH_FACE;
     if (p.y > 4 || p.x >= n) return;
     sphereTime();
+    // only the bottom face can reach the floor
+    if (p.y < 3 ? p.x / (SPH_FACE * SPH_FACE) == 3 : p.y == 3 ? p.x / 9 == 3 : true) sphereFloor();
     vec3 c;
     mat3 m;
 
@@ -52,17 +55,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         }
         fragColor = vec4(mid, r + RHO);
     } else if (p.y == 4 && p.x == 0) {
-        // the lowest cube is one of the middle ones of the bottom face
-        float lift = 0.0;
-        const int lo = (SPH_FACE - SPH_LIFT_W) / 2;
-        for (int j = lo; j < lo + SPH_LIFT_W; j++) {
-            for (int k = lo; k < lo + SPH_LIFT_W; k++) {
-                cubeFormula((3 * SPH_FACE + j) * SPH_FACE + k, c, m);
-                lift = max(lift, -c.y + (0.5 - SPH_BEVEL) * (abs(m[0].y) + abs(m[1].y) + abs(m[2].y)) + SPH_BEVEL);
-            }
-        }
-        // a ballistic hop: a parabola between two landings
-        float rest = lift * SPH_SCALE;
-        fragColor = vec4(rest, rest + SPH_HOP * 4.0 * sphHop * (1.0 - sphHop), 0.0, 0.0);
+        // on the floor the squashed ball rests on its lowest point; in the
+        // air its centre of mass follows the arc (the swing of the shape
+        // never takes the bottom below the floor)
+        float rest = sphereLowest() * SPH_SCALE;
+        fragColor = vec4(rest, rest + max(sphAir, 0.0), 0.0, 0.0);
     }
 }

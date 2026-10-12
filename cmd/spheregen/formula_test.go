@@ -8,11 +8,11 @@ import (
 
 func testParams() params {
 	p := params{
-		n: 7, bevel: 0.1, marg: 0.03, jitter: 0.02, warp: 0.05, offset: 0.1, tumble: 1.05,
-		rIrr: 5.6, rCap: 7.5, sink: 0.6, spread: 0.5, sweep: 0.5, period: 24, wobble: 0.01, wobRot: 0.1,
-		breath: 0.12, hops: 24, ripple: 0.3,
+		n: 7, liftW: 7, bevel: 0.1, marg: 0.03, jitter: 0.02, warp: 0.05, offset: 0.1, tumble: 1.05,
+		rIrr: 5.6, rCap: 7.5, sink: 0.6, spread: 0.5, sweep: 0.5, period: 12, wobble: 0.01, wobRot: 0.1,
+		breath: 0, hop: 0.18, big: 2, squash: 0.45, deep: 2, deepT: 1.5, top: 0.4, bulge: 0.6, jiggle: 0.7, damp: 2.5,
 	}
-	p.rReg = p.regularRadius(2)
+	p.derive(1.48)
 	return p
 }
 
@@ -58,8 +58,8 @@ func TestCellsCloseUp(t *testing.T) {
 func TestCubesInsideCones(t *testing.T) {
 	p := testParams()
 	p.sink = 0
-	for _, tm := range []float64{0, 3.3, 7.1, 12, 17.9} {
-		u := p.morph(tm)
+	for _, tm := range []float64{0, 0.3, 3.3, 5.5, 7.1, 8.4, 10.9} {
+		u := p.phaseAt(tm).u
 		for i := range 6 * p.n * p.n {
 			c, m, _ := p.cubePose(i, tm)
 			q := p.cell(i, tm, u)
@@ -85,7 +85,7 @@ func TestCubesInsideCones(t *testing.T) {
 func TestNoContactWithoutSink(t *testing.T) {
 	p := testParams()
 	p.sink = 0
-	if s := p.verify(1, 7); s.minGap <= 0 || s.folded > 0 {
+	if s := p.verify(1); s.minGap <= 0 || s.folded > 0 {
 		t.Fatalf("min gap %.4f, folded %d", s.minGap, s.folded)
 	}
 }

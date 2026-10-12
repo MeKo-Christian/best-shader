@@ -19,6 +19,7 @@ import "math"
 // params are the knobs of the motion; emit() writes them into the shader.
 type params struct {
 	n      int     // cubes per cube-face edge
+	liftW  int     // the ball's lowest point is one of the middle liftW x liftW cubes of the bottom face
 	bevel  float64 // edge radius
 	marg   float64 // clearance from the cone walls (gap between cubes >= 2 marg)
 	jitter float64 // vertex scatter in the irregular state (radians)
@@ -31,14 +32,46 @@ type params struct {
 	spread float64 // stagger of the morph: share of it a cube may start late
 	sweep  float64 // share of that delay that follows a front over the ball
 
-	period float64 // seconds of the loop regular -> irregular -> regular
+	period float64 // seconds of the loop: two bounces, the wind-up and the big jump
 	wobble float64 // vertex wobble, growing with the morph (radians)
 	wobRot float64 // tumble wobble, growing with the morph (radians)
 	breath float64 // radial breathing (edges)
-	hops   int     // hops per period
-	ripple float64 // outward ripple through the shell after each landing (edges)
 
-	rReg float64 // radius of the regular ball (derived, see regularRadius)
+	// The bounces: the ball touches the floor three times with two small
+	// bounces between, the third time deeper and longer, winding up; then
+	// it jumps big times as high and stays in the air as long as all that
+	// took, turning irregular and back.
+	hop    float64 // height of a small bounce (world)
+	big    float64 // height of the big jump against a small bounce
+	squash float64 // how deep a small bounce presses the ball onto the floor (edges)
+	deep   float64 // the wind-up presses this many times as deep
+	deepT  float64 // ... and lasts this many times as long
+	top    float64 // the top comes down by this share of the squash
+	bulge  float64 // the equator swells by this share of the squash
+	jiggle float64 // after take-off the shape swings on, from this share of the squash
+	damp   float64 // decay rate of that swing (1/s)
+
+	rReg    float64 // radius of the regular ball (derived, see regularRadius)
+	scale   float64 // world units per cube edge (derived)
+	air     float64 // air time of a small bounce (derived from the period)
+	bigAir  float64 // air time of the big jump (derived)
+	contact float64 // time on the floor per small bounce (derived)
+	vLand   float64 // landing speed of a small bounce (edges/s, derived)
+	vBig    float64 // landing speed of the big jump (edges/s, derived)
+}
+
+// derive fits the bounces into the period: contact and air time of a
+// bounce scale alike (contact = pi squash / landing speed, a spring), so the
+// air time follows from the period alone. The big jump takes half the loop.
+func (p *params) derive(radius float64) {
+	p.rReg = p.regularRadius()
+	p.scale = radius / (p.rReg + 0.5)
+	ratio := math.Pi * p.squash * p.scale / (4 * p.hop) // contact / air
+	p.air = p.period / 2 / ((2+p.deepT)*ratio + 2)
+	p.contact = ratio * p.air
+	p.bigAir = p.period / 2
+	p.vLand = 4 * p.hop / p.air / p.scale
+	p.vBig = 4 * p.big * p.hop / p.bigAir / p.scale
 }
 
 // Angular frequencies of the wobble: whole multiples of the loop, so that
@@ -48,6 +81,9 @@ func (p *params) omega(k float64) float64 { return 2 * math.Pi * k / p.period }
 const (
 	wobK0, wobK1, wobK2, wobK3, breathK = 7, 9, 11, 5, 4
 	smaxK                               = 0.15 // smoothness of max(fit radius, hold radius)
+	flatTurn                            = 0.12 // a cube lies flat once the floor pressed it in this far (edges)
+	floorSink                           = 2.0  // irregular state: how far the floor may press a cube inside its cone fit (edges)
+	morphEnd                            = 0.85 // share of the big jump after which the ball is regular again
 )
 
 // ---- hashes -------------------------------------------------------------
@@ -124,8 +160,90 @@ func smootherstep(x float64) float64 { return x * x * x * (x*(x*6-15) + 10) }
 
 func clamp01(x float64) float64 { return math.Max(0, math.Min(1, x)) }
 
-// morph is the loop parameter: 0 regular, 1 irregular, never at rest.
-func (p *params) morph(t float64) float64 { return 0.5 - 0.5*math.Cos(2*math.Pi*t/p.period) }
+// phase is the state of the bounce at a moment.
+type phase struct {
+	u   float64 // morph: 0 regular, 1 irregular
+	q   float64 // how far the floor presses the ball in (edges), > 0 only on the floor
+	a   float64 // shape: > 0 squashed, < 0 stretched (edges)
+	air float64 // height of the ball centre above its resting height (world)
+
+	// level of the floor below the ball centre while q > 0 (edges): the
+	// lowest point of the unsquashed ball, raised by q (see floorLevel)
+	floor float64
+}
+
+// phaseAt is the timeline at t with the floor level filled in.
+func (p *params) phaseAt(t float64) phase {
+	ph := p.timeline(t)
+	if ph.q > 0 {
+		ph.floor = p.floorLevel(t, ph)
+	}
+	return ph
+}
+
+// floorLevel is where the floor stands while it presses the ball in by
+// ph.q: the lowest point of the ball without the squash, raised by q. Only
+// the bottom face can reach it.
+func (p *params) floorLevel(t float64, ph phase) float64 {
+	free := phase{u: ph.u}
+	low := math.Inf(-1)
+	for _, i := range p.liftCands(p.liftW) {
+		c, m, _ := p.cubePoseAt(i, t, free)
+		low = math.Max(low, -c[1]+p.lowest(m))
+	}
+	return low - ph.q
+}
+
+// timeline is the bounce at time t. The ball touches the floor three times
+// with two small bounces between, the third time deeper and longer, and
+// then jumps high; in that jump it turns irregular and back to regular
+// before it lands. On the floor the ball is a spring: it presses in by q,
+// from the landing speed of the last arc to the take-off speed of the next
+// (the wind-up presses further in on top). In the air its shape swings on,
+// damped, about the centre of mass, which follows a parabola.
+func (p *params) timeline(t float64) phase {
+	t -= p.period * math.Floor(t/p.period)
+	for i := range 3 {
+		tc, ta, h, v := p.contact, p.air, p.hop, p.vLand
+		if i == 2 {
+			tc, ta, h, v = p.deepT*p.contact, p.bigAir, p.big*p.hop, p.vBig
+		}
+		if t < tc {
+			x := t / tc
+			vIn := p.vLand
+			if i == 0 {
+				vIn = p.vBig
+			}
+			q := tc / math.Pi * math.Sin(math.Pi*x) * mix(vIn, v, smootherstep(x))
+			if i == 2 {
+				q += (p.deep - 1) * p.squash * math.Pow(math.Sin(math.Pi*x), 2)
+			}
+			return phase{q: q, a: q}
+		}
+		t -= tc
+		if t < ta || i == 2 {
+			x := t / ta
+			u := 0.0
+			if i == 2 {
+				u = p.morph(x)
+			}
+			a := -p.jiggle * p.contact / math.Pi * v * math.Exp(-p.damp*t) * math.Sin(math.Pi*t/p.contact)
+			return phase{u: u, a: a, air: 4*h*x*(1-x) + p.top*a*p.scale}
+		}
+		t -= ta
+	}
+	return phase{}
+}
+
+// morph is how irregular the ball is at the share x of the big jump: it
+// turns irregular on the way up, holds about the top and is regular again
+// by morphEnd.
+func (p *params) morph(x float64) float64 {
+	if x >= morphEnd {
+		return 0
+	}
+	return smootherstep(math.Min(1, 1.5*math.Sin(math.Pi*x/morphEnd)))
+}
 
 // front orders the directions for the staggered start: the change sweeps
 // from the upper front of the ball over it.
@@ -186,14 +304,15 @@ func (p *params) cell(i int, t, u float64) [4]vec {
 	}
 }
 
-// cubePose is the centre and the axes of cube i at time t in ball space,
-// before the ripple; s is its progress towards the irregular state.
+// cubePose is the centre and the axes of cube i at time t in ball space;
+// s is its progress towards the irregular state.
 func (p *params) cubePose(i int, t float64) (c vec, m mat, s float64) {
-	return p.cubePoseAt(i, t, p.morph(t))
+	return p.cubePoseAt(i, t, p.phaseAt(t))
 }
 
-// cubePoseAt is cubePose at the morph u.
-func (p *params) cubePoseAt(i int, t, u float64) (c vec, m mat, s float64) {
+// cubePoseAt is cubePose in the bounce phase ph.
+func (p *params) cubePoseAt(i int, t float64, ph phase) (c vec, m mat, s float64) {
+	u := ph.u
 	q := p.cell(i, t, u)
 	h := cubeKey(i)
 
@@ -234,41 +353,77 @@ func (p *params) cubePoseAt(i int, t, u float64) (c vec, m mat, s float64) {
 
 	// the smallest radius that keeps the cube inside the cone: the rounded
 	// cube's support along each wall normal against the wall's distance
-	fit := 0.0
-	for e := range 4 {
-		sup := (0.5-p.bevel)*(math.Abs(m[0].dot(w[e]))+math.Abs(m[1].dot(w[e]))+math.Abs(m[2].dot(w[e]))) + p.bevel + p.marg
-		fit = math.Max(fit, sup/wd[e])
+	fitOf := func(m mat) float64 {
+		fit := 0.0
+		for e := range 4 {
+			sup := (0.5-p.bevel)*(math.Abs(m[0].dot(w[e]))+math.Abs(m[1].dot(w[e]))+math.Abs(m[2].dot(w[e]))) + p.bevel + p.marg
+			fit = math.Max(fit, sup/wd[e])
+		}
+		return fit
 	}
 	hold := mix(p.rReg, p.rIrr, s) + p.breath*(0.5-0.5*math.Cos(p.omega(breathK)*t))
-	r := smax(fit-p.sink*s, hold, smaxK)
+	lo := fitOf(m) - p.sink*s
+	r := smax(lo, hold, smaxK)
+
+	// The squash: the shell swells at the equator and comes down at the
+	// top, and on the floor its lowest points are cut flat by the plane the
+	// floor pressed up. A cube the floor reaches turns onto the face that
+	// looks most downwards (cubes that stand on an edge do not turn), and
+	// in the irregular state it may sink as far as the floor presses.
+	dy := d[1]
+	r1 := r + ph.a*(p.bulge*(1-dy*dy)-p.top*dy*dy)
+	if ph.q > 0 && i/(p.n*p.n) == 3 {
+		press := r*(-dy) + p.lowest(m) - ph.floor
+		k := 0
+		for c := 1; c < 3; c++ {
+			if math.Abs(m[c][1]) > math.Abs(m[k][1]) {
+				k = c
+			}
+		}
+		f := m[k]
+		if f[1] > 0 {
+			f = f.mul(-1)
+		}
+		if wt := smoothstep(0, flatTurn, press) * smoothstep(0.75, 0.85, -f[1]); wt > 0 && f[1] > -0.99999 {
+			m = axisAngle(f.cross(vec{0, -1, 0}).normalize(), wt*math.Acos(-f[1])).mul(m)
+			lo = fitOf(m) - p.sink*s
+			r = smax(lo, hold, smaxK)
+			r1 = r + ph.a*(p.bulge*(1-dy*dy)-p.top*dy*dy)
+		}
+		if press > 0 {
+			r1 = math.Min(r1, (ph.floor-p.lowest(m))/(-dy))
+			lo -= floorSink * s
+		}
+	}
+	// the squash moves a cube in no further than to lo
+	if in := r - r1; in > 0 {
+		r -= sminP(in, r-lo)
+	} else {
+		r = r1
+	}
 	return d.mul(r), m, s
+}
+
+// sminP <= min(a, b) for a, b >= 0, smooth, and 0 where either is 0.
+func sminP(a, b float64) float64 {
+	if a <= 0 || b <= 0 {
+		return 0
+	}
+	return a * b / math.Pow(a*a*a*a+b*b*b*b, 0.25)
+}
+
+func smoothstep(a, b, x float64) float64 {
+	x = clamp01((x - a) / (b - a))
+	return x * x * (3 - 2*x)
 }
 
 // smax >= max(a, b), smooth.
 func smax(a, b, k float64) float64 { return 0.5 * (a + b + math.Sqrt((a-b)*(a-b)+k*k)) }
 
-// hop is the phase in [0, 1) of the current hop.
-func (p *params) hop(t float64) float64 {
-	x := t / p.period * float64(p.hops)
-	return x - math.Floor(x)
-}
-
-// rippleAt is the outward push of a cube at direction d: a wave that starts
-// at the floor contact when the ball lands and runs up the shell, fading.
-func (p *params) rippleAt(d vec, t float64) float64 {
-	front := math.Acos(math.Max(-1, math.Min(1, -d[1]))) / math.Pi // 0 bottom, 1 top
-	x := p.hop(t)*2.5 - front
-	if x <= 0 || x >= 1 {
-		return 0
-	}
-	return p.ripple * (1 - 0.7*front) * math.Pow(math.Sin(math.Pi*x), 2)
-}
-
-// pose is the final centre and axes of cube i at time t (ball space).
+// pose is the centre and axes of cube i at time t (ball space).
 func (p *params) pose(i int, t float64) (vec, mat) {
 	c, m, _ := p.cubePose(i, t)
-	d := c.normalize()
-	return c.add(d.mul(p.rippleAt(d, t))), m
+	return c, m
 }
 
 // lowest is how far the rounded cube reaches below its centre.
@@ -277,16 +432,14 @@ func (p *params) lowest(m mat) float64 {
 }
 
 // regularRadius is the smallest radius at which every cube of the regular
-// ball fits its cell, wobbling, over the loop.
-func (p *params) regularRadius(fps float64) float64 {
+// ball, which stands still but for the breath and the squash, fits its cell.
+func (p *params) regularRadius() float64 {
 	q := *p
 	q.breath, q.rReg, q.rIrr = 0, 0, 0
 	r := 0.0
-	for st := range int(p.period * fps) {
-		for i := range 6 * p.n * p.n {
-			c, _, _ := q.cubePoseAt(i, float64(st)/fps, 0)
-			r = math.Max(r, c.length())
-		}
+	for i := range 6 * p.n * p.n {
+		c, _, _ := q.cubePoseAt(i, 0, phase{})
+		r = math.Max(r, c.length())
 	}
 	return r
 }

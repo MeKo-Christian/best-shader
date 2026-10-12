@@ -96,12 +96,16 @@ compare ref="reference/reference.png" times="0" *args:
     go run . -size {{size}} -shot out/shot.png -times {{times}} -compare {{ref}} {{args}}
 
 # Frame sequence (start and duration in seconds) into out/clip/, encoded as out/clip.mp4;
-# the default is one loop of the ball (24 s) at 60 fps
-clip start="0" dur="24" fps="60" *args:
+# the default is one loop of the ball (SPH_PERIOD in shaders/sphere_data.glsl) at 60 fps
+clip start="0" dur="loop" fps="60" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dur={{dur}}
+    if [ "$dur" = loop ]; then dur=$(awk '/SPH_PERIOD =/ { sub(";", "", $5); print $5 }' shaders/sphere_data.glsl); fi
     rm -rf out/clip && mkdir -p out/clip
-    go run . -size {{size}} -shot out/clip/f.png -time {{start}} -fps {{fps}} -frames $(awk 'BEGIN { print int({{dur}} * {{fps}} + 0.5) }') {{args}}
+    go run . -size {{size}} -shot out/clip/f.png -time {{start}} -fps {{fps}} -frames $(awk -v d="$dur" 'BEGIN { print int(d * {{fps}} + 0.5) }') {{args}}
     ffmpeg -loglevel error -y -framerate {{fps}} -i out/clip/f_%05d.png -c:v libx264 -pix_fmt yuv420p -crf 16 out/clip.mp4
-    @echo "wrote out/clip.mp4"
+    echo "wrote out/clip.mp4 ($dur s)"
 
 # Contact sheet of every n-th frame of a frame sequence (crop = ffmpeg crop w:h:x:y)
 sheet dir="out/clip" every="15" grid="4x4" crop="iw:ih:0:0" width="480" out="out/sheet.png":

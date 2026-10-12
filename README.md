@@ -1,8 +1,11 @@
 # Best Shader
 
 A tiled marble floor in front of a rule-based beam lattice, and on the floor a
-ball of polished marble cubes that keeps morphing between a regular cubed
-sphere and a tumbled, irregular one while it hops gently. Rendered by a
+ball of polished marble cubes that bounces slowly, squashing like a rubber
+ball on every landing: as a regular cubed sphere it touches the floor three
+times, the third time deeper, winding up, then jumps twice as high and turns
+into a tumbled, irregular ball in the air and back before it lands (one 12 s
+loop). Rendered by a
 Shadertoy-compatible Go runner; `imgstat` compares renders with the reference
 images.
 
@@ -12,7 +15,10 @@ over four grid vertices. The vertices scatter, swirl and wobble as functions
 of the vertex alone, so neighbouring cells always share their walls. A cube
 stands where it just fits its cone, so no two cubes can touch. In the irregular
 state the cubes may sink a little deeper, which packs the ball as densely as
-the regular one at the price of rare overlaps below 0.06 cube edges.
+the regular one at the price of rare overlaps below 0.06 cube edges. The
+squash only moves cubes radially (and turns those the floor presses flat), so
+the cones still hold; the arcs are ballistic and the contact is a spring that
+matches the landing and take-off speeds.
 `cmd/spheregen` mirrors the formula, checks it over the whole loop and writes
 its constants to `shaders/sphere_data.glsl`. Buffer A evaluates the formula
 once per frame, and the scene pass reads the poses with `texelFetch`.
@@ -35,7 +41,7 @@ just run                  # window with hot reload (Space pauses, P saves a PNG)
 just shot 0,15            # offscreen frames into out/
 just bench                # frame time at 1280x720 and 2x
 just bundle               # Shadertoy export into out/shadertoy.glsl
-just clip                 # one loop of the ball (24 s) at 60 fps into out/clip.mp4
+just clip                 # one loop of the ball (12 s) at 60 fps into out/clip.mp4
 just sphere               # check the ball's formula, write shaders/sphere_data.glsl
 ```
 
