@@ -9,18 +9,12 @@
 // All shading happens in linear RGB; linearToSrgb() encodes at the very end.
 //
 // Defines (scene and lattice defines are listed in scene.glsl/lattice.glsl):
-//   -D FOCUS=2.8      focus distance (eye-space depth)
+//   -D FOCUS=4.5      focus distance (eye-space depth), the front of the ball
 //   -D APERTURE=6.0   blur radius in pixels (at 1254 px height) at infinity
 //   -D EXPOSURE=1.0   overall brightness
 
 // #bufferA "scene.glsl"
 
-#ifndef FOCUS
-#define FOCUS 2.8
-#endif
-#ifndef APERTURE
-#define APERTURE 6.0
-#endif
 #ifndef EXPOSURE
 #define EXPOSURE 1.0
 #endif
@@ -29,10 +23,6 @@
 
 #define GOLDEN_ANGLE 2.39996323
 #define RAD_SCALE 0.6
-
-float cocRadius(float depth, float scale) {
-    return min(abs(1.0 - FOCUS / max(depth, 1e-3)), 1.0) * APERTURE * scale;
-}
 
 vec3 depthOfField(vec2 fragCoord, float scale) {
     vec2 px = 1.0 / iResolution.xy;

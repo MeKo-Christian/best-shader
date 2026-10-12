@@ -107,6 +107,10 @@ sheet dir="out/clip" every="15" grid="4x4" crop="iw:ih:0:0" width="480" out="out
     ffmpeg -loglevel error -y -i {{dir}}/f_%05d.png -vf "select='not(mod(n\,{{every}}))',crop={{crop}},scale={{width}}:-1,tile={{grid}}:padding=4" -frames:v 1 {{out}}
     @echo "wrote {{out}}"
 
+# Plan and verify the cube ball's motion, write shaders/sphere_data.glsl (flags: go run ./cmd/spheregen -h)
+sphere *args:
+    go run ./cmd/spheregen {{args}}
+
 # Benchmark at the default size and at 2x
 bench dur="3s" *args:
     go run . -bench {{dur}} -size 1280x720 {{args}}

@@ -7,6 +7,20 @@
 #define PI  3.14159265359
 #define TAU 6.28318530718
 
+// ---- camera lens (both passes: Buffer A picks its sample count by it) --------
+#ifndef FOCUS
+#define FOCUS 4.5
+#endif
+#ifndef APERTURE
+#define APERTURE 6.0
+#endif
+
+// Thin-lens circle of confusion in pixels for an eye-space depth; scale is the
+// image height relative to 1254 px.
+float cocRadius(float depth, float scale) {
+    return min(abs(1.0 - FOCUS / max(depth, 1e-3)), 1.0) * APERTURE * scale;
+}
+
 // ---- math -------------------------------------------------------------------
 mat2 rot(float a) {
     float c = cos(a), s = sin(a);

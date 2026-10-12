@@ -3,7 +3,9 @@
 // applies the depth of field.
 //
 // Geometry: a tiled floor (y = 0) in front of a cubic beam lattice whose
-// region and beams come from lattice.glsl. The lattice shares the floor's
+// region and beams come from lattice.glsl, and on the floor a ball of
+// polished marble cubes that turns from regular to irregular and back
+// (sphere.glsl). The lattice shares the floor's
 // orientation: its cells are CELL_TILES x CELL_TILES tiles and its joints
 // stand on tile joint crossings, so we see it at about 45 degrees. A world ray
 // is mapped into lattice space and traversed cell by cell (3D DDA); in each
@@ -31,6 +33,8 @@
 //   -D PITCH=0.0       camera pitch in degrees (positive = up)
 //   -D FADE=1.2        how fast light dies with depth inside the lattice
 //   -D AA=2            supersampling (AA x AA samples per pixel)
+//   -D AA_COC=1.5      blur radius in pixels above which a lattice pixel
+//                      gets one sample: the bokeh hides the aliasing there
 //   -D MAX_STEPS=160   DDA step limit per lattice ray
 //
 // Floor and light (floor lengths in tiles):
@@ -44,6 +48,12 @@
 //   -D LIGHT_X=-2.0    light position (world): above the open room, fitted
 //   -D LIGHT_Y=6.0     to the brightness falloff of the reference floor
 //   -D LIGHT_Z=10.0
+//
+// Cube ball (motion and placement in sphere.glsl):
+//   -D CUBE_ALBEDO=0.66 mean albedo of the cube marble (the floor's)
+//   -D CUBE_ROUGH=0.06  GGX roughness of the polished cubes
+//   -D SPH_DEBUG        shows how many cubes each pixel tests (green to red,
+//                       white: the candidate list overflows)
 
 #ifndef BEAM
 #define BEAM 0.13
@@ -84,6 +94,9 @@
 #ifndef AA
 #define AA 2
 #endif
+#ifndef AA_COC
+#define AA_COC 1.5
+#endif
 #ifndef GAP
 #define GAP 0.08
 #endif
@@ -114,12 +127,19 @@
 #ifndef LIGHT_Z
 #define LIGHT_Z 10.0
 #endif
+#ifndef CUBE_ALBEDO
+#define CUBE_ALBEDO 0.66
+#endif
+#ifndef CUBE_ROUGH
+#define CUBE_ROUGH 0.06
+#endif
 
 // Floor grid phase relative to the camera, in tiles (from the fit).
 const vec2 TILE_OFF = vec2(0.5493, 0.0090);
 
 #include "common.glsl"
 #include "lattice.glsl"
+#include "sphere.glsl"
 
 #ifndef MAX_STEPS
 #define MAX_STEPS 160
@@ -435,9 +455,31 @@ float marble(vec3 s, float fw) {
     return tone * (1.0 - VEIN * vein) * (0.95 + 0.1 * cloud);
 }
 
-vec3 shadeFloor(vec3 ro, vec3 rd, float t0, float pixAngle, out float tHit) {
-    // sample footprint: AA samples split the pixel
-    float cone = pixAngle / float(AA);
+// GGX specular BRDF of the sphere light at distance dist; its size widens
+// the lobe (Karis).
+float ggxLight(vec3 n, vec3 v, vec3 l, float dist, float rough) {
+    float nl = max(dot(n, l), 0.0);
+    float nv = max(dot(n, v), 1e-3);
+    vec3 hv = normalize(l + v);
+    float nh = max(dot(n, hv), 0.0);
+    float a = rough * rough;
+    float a2 = a * a;
+    float aw = min(a + LIGHT_R / (2.0 * dist), 1.0);
+    float dd = nh * nh * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * dd * dd) * (a / aw) * (a / aw);
+    float k = 0.5 * a;
+    float G = nl / (nl * (1.0 - k) + k) * nv / (nv * (1.0 - k) + k);
+    float F = F0 + (1.0 - F0) * pow(1.0 - max(dot(v, hv), 0.0), 5.0);
+    return D * G * F / (4.0 * max(nl, 1e-3) * nv);
+}
+
+// Fresnel towards a uniform environment for a rough surface (Lagarde).
+float envFresnel(float nv, float rough) {
+    return F0 + (max(1.0 - rough, F0) - F0) * pow(1.0 - nv, 5.0);
+}
+
+// cone: angular size of the sample footprint
+vec3 shadeFloor(vec3 ro, vec3 rd, float t0, float cone, out float tHit) {
     tHit = traceSlabs(ro, rd, t0, 0.5 * cone);
     vec3 p = ro + rd * tHit;
     vec3 s = toTile(p);
@@ -460,66 +502,180 @@ vec3 shadeFloor(vec3 ro, vec3 rd, float t0, float pixAngle, out float tHit) {
         shadow = slabShadow(s + ns * 0.002, tileDir(l), dist / LIGHT_R);
         vec2 xi = hash22(floor(rd.xy / cone * 2.0));   // per AA sample: seeded by the ray
         if (shadow > 0.0) shadow *= latticeShadow(p + n * 1e-3, xi);
+        if (shadow > 0.0) shadow *= sphereLightVis(p + n * 1e-3, lightPos, LIGHT_R, -1);
     }
-    float sky = slabSky(s, ns) * latticeSky(p);
+    float sky = slabSky(s, ns) * latticeSky(p) * sphereSky(p);
 
-    // GGX specular of the sphere light; its size widens the lobe (Karis).
-    float nv = max(dot(n, v), 1e-3);
-    vec3 hv = normalize(l + v);
-    float nh = max(dot(n, hv), 0.0);
-    float a = ROUGH * ROUGH;
-    float a2 = a * a;
-    float aw = min(a + LIGHT_R / (2.0 * dist), 1.0);
-    float dd = nh * nh * (a2 - 1.0) + 1.0;
-    float D = a2 / (PI * dd * dd) * (a / aw) * (a / aw);
-    float k = 0.5 * a;
-    float G = nl / (nl * (1.0 - k) + k) * nv / (nv * (1.0 - k) + k);
-    float F = F0 + (1.0 - F0) * pow(1.0 - max(dot(v, hv), 0.0), 5.0);
-    float spec = D * G * F / (4.0 * max(nl, 1e-3) * nv);
-
-    // rough Fresnel towards the sky (Lagarde); the diffuse gets the rest
-    float Fs = F0 + (max(1.0 - ROUGH, F0) - F0) * pow(1.0 - nv, 5.0);
+    float spec = ggxLight(n, v, l, dist, ROUGH);
+    // rough Fresnel towards the sky; the diffuse gets the rest
+    float Fs = envFresnel(max(dot(n, v), 1e-3), ROUGH);
     float direct = 0.85 * I * nl * shadow;
     float ambient = 0.15 * I * sky;
     return vec3(albedo * (1.0 - Fs) * (direct + ambient) + PI * spec * direct + Fs * ambient);
 }
 
-// Colour and eye-space depth for one camera ray.
-vec4 render(vec2 fragCoord) {
+// ---- cube ball --------------------------------------------------------------
+// Polished marble: every face is cut from its own part of the block, at the
+// floor's physical scale, under a tight GGX lobe. The cubes see the sphere
+// light (shadowed by the other cubes), the sky above and the lit floor
+// below, and mirror the two in their Fresnel reflection. Inside the shell
+// the cubes close in: a face looking into the ball sees its dark hollow.
+
+// Radiance of the floor (in units of the ambient terms) at the floor point
+// q: its marble under the sky and the light, which the ball, taken as a
+// porous sphere resting on the floor, partly hides.
+float floorGlow(vec3 q) {
+    vec3 L = lightPos - q, B = sphO - q;
+    float D = length(L), dB = length(B);
+    float a = asin(min(LIGHT_R / D, 1.0)), b = asin(min(sphO.y / dB, 1.0));
+    float sep = acos(clamp(dot(L, B) / (D * dB), -1.0, 1.0));
+    float cover = min(b * b / (a * a), 1.0) * (1.0 - smoothstep(abs(a - b), a + b, sep));
+    float I = 2.0 / (1.0 + D * D / 600.0);
+    return ALBEDO * I * (0.85 * max(L.y / D, 0.0) * (1.0 - SPH_SOLID * cover) + 0.15);
+}
+
+// Per pixel caches of the cube terms that vary slowly over a face.
+int aoKey = -1;
+float aoVal;
+
+// lp: hit point in cube space, id: the cube.
+vec3 shadeCube(vec3 p, vec3 n, vec3 rd, int id, vec3 lp, float cone, float t) {
+    vec3 a = abs(lp);
+    int ax = a.x > a.y && a.x > a.z ? 0 : a.y > a.z ? 1 : 2;
+    vec2 uv = ax == 0 ? lp.yz : ax == 1 ? lp.zx : lp.xy;
+    float face = float(2 * ax) + step(0.0, lp[ax]);
+    vec2 cell = vec2(float(id) * 6.0 + face, 517.0);
+    vec2 q = cell + 0.5 + uv * (SPH_SCALE / TILE);
+    float albedo = marble(vec3(q.x, 0.0, q.y), cone * t / TILE) * (CUBE_ALBEDO / ALBEDO);
+
+    vec3 v = -rd;
+    vec3 L = lightPos - p;
+    float dist = length(L);
+    vec3 l = L / dist;
+    float I = 2.0 / (1.0 + dist * dist / 600.0);     // as in lightAt()
+    float nl = max(dot(n, l), 0.0);
+    float shadow = nl > 0.0 ? sphereLightVis(p + n * 1e-3, lightPos, LIGHT_R, id) : 0.0;
+
+    // Sky light: the neighbours close in on it (sphereOcclusion), and a face
+    // turned into the ball looks into its dim hollow. Below, a face sees the
+    // floor, where it looks: the patch about as far out as the face is high.
+    int key = id * 8 + int(face);
+    if (key != aoKey) {
+        aoKey = key;
+        aoVal = clamp(1.0 - sphereOcclusion(p, n, id), 0.0, 1.0);
+    }
+    float open = aoVal * mix(0.2, 1.0, 0.5 + 0.5 * dot(n, normalize(p - sphO)));
+    float up = 0.5 + 0.5 * n.y;
+    float glow = floorGlow(vec3(p.x + n.x * p.y, 0.0, p.z + n.z * p.y));
+    float ambient = (0.15 * I * up + glow * (1.0 - up)) * open;
+
+    vec3 r = reflect(rd, n);
+    float env = (r.y > 0.0 ? 0.15 * I : floorGlow(vec3(p.x + r.x * p.y / max(-r.y, 0.05), 0.0, p.z + r.z * p.y / max(-r.y, 0.05)))) * open;
+    float nv = max(dot(n, v), 1e-3);
+    float Fs = envFresnel(nv, CUBE_ROUGH);
+    float direct = 0.85 * I * nl * shadow;
+    float spec = ggxLight(n, v, l, dist, CUBE_ROUGH);
+    return vec3(albedo * (1.0 - Fs) * (direct + ambient) + PI * spec * direct + Fs * env);
+}
+
+// Camera ray through a pixel position; fwd is the optical axis.
+void cameraRay(vec2 fragCoord, out vec3 ro, out vec3 rd, out vec3 fwd) {
     vec2 uv = (2.0 * fragCoord - iResolution.xy) / iResolution.y - vec2(SHIFT_X, SHIFT_Y);
 
-    vec3 ro = vec3(CAM_X, CAM_H, 0.0);
+    ro = vec3(CAM_X, CAM_H, 0.0);
     float pa = radians(PITCH), ra = radians(ROLL);
-    vec3 fwd = vec3(0.0, sin(pa), cos(pa));
+    fwd = vec3(0.0, sin(pa), cos(pa));
     vec3 right = vec3(1.0, 0.0, 0.0);
     vec3 up = cross(fwd, right);
     vec3 r2 = right * cos(ra) + up * sin(ra);
     vec3 u2 = up * cos(ra) - right * sin(ra);
-    vec3 rd = normalize(uv.x * r2 + uv.y * u2 + FOCAL * fwd);
+    rd = normalize(uv.x * r2 + uv.y * u2 + FOCAL * fwd);
     rd += 1e-6 * step(abs(rd), vec3(1e-6)); // keep 1/rd finite
+}
 
-    float pixAngle = 2.0 / (iResolution.y * FOCAL);
+// What the last render() call hit.
+bool hitBall;
 
-    vec3 nor;
-    float tL = latticeHit(ro, rd, nor);
-    float tF = rd.y < 0.0 ? -ro.y / rd.y : -1.0;
+// The first lattice trace of a pixel the ball covers in part: further camera
+// samples there that slip between the cubes reuse it. The lattice behind
+// the ball is far out of focus, which hides the aliasing, as for the
+// single-sampled blurred lattice pixels in mainImage().
+bool latCached = false;
+float latCacheT;     // ray distance of the cached hit, 1e9 if it missed
+vec3 latCacheCol;
 
+// Colour and eye-space depth for one camera ray; spp is the number of samples
+// per pixel axis, which sets the footprint each sample filters over.
+vec4 render(vec2 fragCoord, float spp) {
+    vec3 ro, rd, fwd;
+    cameraRay(fragCoord, ro, rd, fwd);
+    float cone = 2.0 / (iResolution.y * FOCAL * spp);
+
+    vec3 nor, lp;
+    int id;
+    float tF = rd.y < 0.0 ? -ro.y / rd.y : 1e9;
+    float tS = sphereHit(ro, rd, nor, id, lp);
+    if (tS < 0.0) tS = 1e9;
+
+    // The ball stands in front of the lattice, so a cube hit needs no
+    // lattice trace.
+    hitBall = tS < tF;
+    if (hitBall) return vec4(shadeCube(ro + rd * tS, nor, rd, id, lp, cone, tS), tS * dot(rd, fwd));
+
+    float tL;
     vec3 col = vec3(0.0);
-    float t = 1e3;
-    if (tL > 0.0 && (tF < 0.0 || tL < tF)) {
-        t = tL;
-        col = latticeColor(ro + rd * t, nor, rd);
-    } else if (tF > 0.0) {
-        col = shadeFloor(ro, rd, tF, pixAngle, t);
+    if (latCached) {
+        tL = latCacheT;
+        col = latCacheCol;
+    } else {
+        tL = latticeHit(ro, rd, nor);
+        if (tL < 0.0) tL = 1e9;
+        else col = latticeColor(ro + rd * tL, nor, rd);
+        if (sphNCand > 0) {
+            latCached = true;
+            latCacheT = tL;
+            latCacheCol = col;
+        }
     }
+    float t = 1e3;
+    if (tL < tF) t = tL;
+    else if (tF < 1e9) col = shadeFloor(ro, rd, tF, cone, t);
     return vec4(col, t * dot(rd, fwd));
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-    vec3 col = vec3(0.0);
-    for (int j = 0; j < AA; j++)
-        for (int i = 0; i < AA; i++)
-            col += render(fragCoord + (vec2(i, j) + 0.5) / float(AA) - 0.5).rgb;
-    // depth from the pixel centre: the DOF pass needs one depth per pixel
-    fragColor = vec4(col / float(AA * AA), render(fragCoord).a);
+    spherePrepare();
+    {
+        // the cubes the camera samples of this pixel can meet (they stay
+        // within 0.71 pixel of the centre ray)
+        vec3 ro, rd, fwd;
+        cameraRay(fragCoord, ro, rd, fwd);
+        sphereCandidates(ro, rd, 1.5 / (iResolution.y * FOCAL));
+    }
+#ifdef SPH_DEBUG
+    // how full the candidate list is: green to red, white where it overflows
+    float fill = float(sphNCand) / float(SPH_CAND);
+    fragColor = vec4(fill >= 1.0 ? vec3(1.0) : vec3(fill, 1.0 - fill, 0.0) * step(0.5, float(sphNCand)), 1.0);
+    return;
+#endif
+
+    // The first sample also gives the one depth per pixel the DOF pass needs.
+    vec4 first = render(fragCoord + vec2(0.5 / float(AA) - 0.5), float(AA));
+
+    // A blurred lattice pixel needs no more samples: its beams are wide and
+    // smooth, and the bokeh hides the aliasing of their edges. The floor keeps
+    // all samples even when blurred, because its far joints are finer than a
+    // pixel and would alias into moire that no blur removes.
+    vec3 ro, rd, fwd;
+    cameraRay(fragCoord, ro, rd, fwd);
+    float zFloor = rd.y < 0.0 ? -ro.y / rd.y * dot(rd, fwd) : 1e3;
+    bool lattice = !hitBall && (first.a < 0.99 * zFloor || zFloor >= 1e3);
+    if (lattice && cocRadius(first.a, iResolution.y / 1254.0) > AA_COC) {
+        fragColor = first;
+        return;
+    }
+    vec3 col = first.rgb;
+    for (int k = 1; k < AA * AA; k++)
+        col += render(fragCoord + (vec2(k % AA, k / AA) + 0.5) / float(AA) - 0.5, float(AA)).rgb;
+    fragColor = vec4(col / float(AA * AA), first.a);
 }
