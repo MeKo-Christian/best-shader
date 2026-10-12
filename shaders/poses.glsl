@@ -5,8 +5,7 @@
 //   row 1, 2:                         its x and y axes (z = cross(x, y))
 //   row 3, column k < 54:             bounding sphere of cluster k (centre, radius)
 //   row 4, column 0:                  height of the ball centre above the floor
-//                                     at rest (squashed, if on the floor) and
-//                                     with the bounce (world)
+//                                     at rest and with the bounce (world)
 // A cluster is a block of cells of a cube face, 3 x 3 blocks per face; the
 // scene tests a cluster's sphere before its cubes.
 
@@ -26,8 +25,6 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     const int n = 6 * SPH_FACE * SPH_FACE;
     if (p.y > 4 || p.x >= n) return;
     sphereTime();
-    // only the bottom face can reach the floor
-    if (p.y < 3 ? p.x / (SPH_FACE * SPH_FACE) == 3 : p.y == 3 ? p.x / 9 == 3 : true) sphereFloor();
     vec3 c;
     mat3 m;
 
@@ -55,10 +52,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         }
         fragColor = vec4(mid, r + RHO);
     } else if (p.y == 4 && p.x == 0) {
-        // on the floor the squashed ball rests on its lowest point; in the
-        // air its centre of mass follows the arc (the swing of the shape
-        // never takes the bottom below the floor)
-        float rest = sphereLowest() * SPH_SCALE;
-        fragColor = vec4(rest, rest + max(sphAir, 0.0), 0.0, 0.0);
+        // the centre flies on the arc, and the floor presses it down by sphQ
+        float rest = SPH_LOW * SPH_SCALE;
+        fragColor = vec4(rest, rest + sphAir - sphQ * SPH_SCALE, 0.0, 0.0);
     }
 }

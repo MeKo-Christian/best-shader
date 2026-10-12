@@ -8,9 +8,9 @@ import (
 
 func testParams() params {
 	p := params{
-		n: 7, liftW: 7, bevel: 0.1, marg: 0.03, jitter: 0.02, warp: 0.05, offset: 0.1, tumble: 1.05,
-		rIrr: 5.6, rCap: 7.5, sink: 0.6, spread: 0.5, sweep: 0.5, period: 12, wobble: 0.01, wobRot: 0.1,
-		breath: 0, hop: 0.18, big: 2, squash: 0.45, deep: 2, deepT: 1.5, top: 0.4, bulge: 0.6, jiggle: 0.7, damp: 2.5,
+		n: 7, bevel: 0.1, marg: 0.03, jitter: 0.02, warp: 0.05, offset: 0.1, tumble: 1.05,
+		rIrr: 5.6, rCap: 7.5, sink: 0.6, spread: 0.6, sweep: 0.7, period: 8.5,
+		hop: 0.18, big: 2, squash: 0.45, deep: 2, deepT: 1.5, splay: 0.3, top: 0.4, bulge: 0.6, damp: 2.5,
 	}
 	p.derive(1.48)
 	return p
@@ -58,11 +58,11 @@ func TestCellsCloseUp(t *testing.T) {
 func TestCubesInsideCones(t *testing.T) {
 	p := testParams()
 	p.sink = 0
-	for _, tm := range []float64{0, 0.3, 3.3, 5.5, 7.1, 8.4, 10.9} {
-		u := p.phaseAt(tm).u
+	for _, tm := range []float64{0, 0.3, 2.6, 4.4, 5.6, 6.4, 7.2, 8.1} {
+		ph := p.phaseAt(tm)
 		for i := range 6 * p.n * p.n {
 			c, m, _ := p.cubePose(i, tm)
-			q := p.cell(i, tm, u)
+			q := p.cell(i, tm, ph)
 			for e := range 4 {
 				w := q[e].cross(q[(e+1)%4]).normalize()
 				for k := range 8 {

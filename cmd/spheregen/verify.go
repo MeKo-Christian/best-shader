@@ -19,34 +19,22 @@ type stats struct {
 	folded      int     // cells that turned inside out at some sample (must be 0)
 	minWall     float64 // smallest cos between a cell's wall normal and its cube direction
 	rLo, rHi    float64 // radius range of the cube centres
-	liftMiss    float64 // how far a cube outside the lift candidates reached below them (must be <= 0)
-	liftLo      float64 // lowest and highest lift (ball centre above the floor, edges)
-	liftHi      float64
+	floorIn     float64 // deepest a cube reaches into the floor (edges, ideally <= 0)
+	floorOff    float64 // highest the pressed ball stands off the floor (edges, ideally 0)
+	maxAcc      float64 // largest acceleration of a cube about the ball centre (world/s^2)
+	accT        float64
+	accCube     int
 	regRange    [2]float64 // radius range at t = 0
 	irrRange    [3]float64 // min, median, max radius at t = period / 2
 	maxTumble   float64
 	medianSlide float64 // median move of a cube between the regular and the irregular state (pitches)
-	sinkLo      float64 // least share of the squash the ball centre follows (1 = all)
 }
 
 func (s stats) String() string {
 	return fmt.Sprintf("samples %d, min gap %.4f at t=%.3f (cubes %d, %d), overlapping pair samples %d, folded cells %d, min wall cos %.4f, "+
-		"radius %.3f..%.3f, lift %.3f..%.3f (miss %.4f), centre follows the squash by >= %.2f",
+		"radius %.3f..%.3f, into the floor %.4f, off the floor when pressed %.4f, largest acceleration %.2f at t=%.3f (cube %d)",
 		s.samples, s.minGap, s.gapT, s.gapPair[0], s.gapPair[1], s.overlaps, s.folded, s.minWall,
-		s.rLo, s.rHi, s.liftLo, s.liftHi, s.liftMiss, s.sinkLo)
-}
-
-// liftCands are the cubes the shader asks for the ball's lowest point: the
-// middle w x w cells of the bottom face.
-func (p *params) liftCands(w int) []int {
-	var out []int
-	lo := (p.n - w) / 2
-	for j := lo; j < lo+w; j++ {
-		for i := lo; i < lo+w; i++ {
-			out = append(out, 3*p.n*p.n+j*p.n+i)
-		}
-	}
-	return out
+		s.rLo, s.rHi, s.floorIn, s.floorOff, s.maxAcc, s.accT, s.accCube)
 }
 
 // verify runs the formula over one loop at fps samples per second:
@@ -55,15 +43,13 @@ func (p *params) liftCands(w int) []int {
 //     independent check of the implementation: a rounded cube is its core
 //     box grown by the bevel, so the separating axis gap of the cores minus
 //     twice the bevel bounds their distance from below;
-//   - the radius bound and the lift candidates the shader relies on.
+//   - the radius bound the shader relies on, the floor (no cube reaches
+//     into it, and the pressed ball stands on it), and how smoothly the
+//     cubes move: the largest acceleration about the ball centre, by
+//     differences between the frames.
 func (p *params) verify(fps float64) stats {
 	nc := 6 * p.n * p.n
 	steps := int(math.Ceil(p.period * fps))
-	cands := p.liftCands(p.liftW)
-	isCand := make([]bool, nc)
-	for _, i := range cands {
-		isCand[i] = true
-	}
 
 	workers := runtime.NumCPU()
 	res := make([]stats, workers)
@@ -72,16 +58,21 @@ func (p *params) verify(fps float64) stats {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			r := stats{minGap: math.Inf(1), minWall: math.Inf(1), rLo: math.Inf(1), liftLo: math.Inf(1), liftMiss: math.Inf(-1), sinkLo: 1}
+			r := stats{minGap: math.Inf(1), minWall: math.Inf(1), rLo: math.Inf(1), floorIn: math.Inf(-1)}
 			pos := make([]vec, nc)
 			rot := make([]mat, nc)
 			for st := w; st < steps; st += workers {
 				t := float64(st) / fps
 				ph := p.phaseAt(t)
-				lift, other := math.Inf(-1), math.Inf(-1)
+				low := math.Inf(-1)
 				for i := range nc {
 					pos[i], rot[i], _ = p.cubePoseAt(i, t, ph)
-					q := p.cell(i, t, ph.u)
+					prev, _ := p.pose(i, t-1/fps)
+					next, _ := p.pose(i, t+1/fps)
+					if acc := next.add(prev).sub(pos[i].mul(2)).length() * p.scale * fps * fps; acc > r.maxAcc {
+						r.maxAcc, r.accT, r.accCube = acc, t, i
+					}
+					q := p.cell(i, t, ph)
 					d := pos[i].normalize()
 					for e := range 4 {
 						c := q[e].cross(q[(e+1)%4]).normalize().dot(d)
@@ -92,18 +83,11 @@ func (p *params) verify(fps float64) stats {
 					}
 					rad := pos[i].length()
 					r.rLo, r.rHi = math.Min(r.rLo, rad), math.Max(r.rHi, rad)
-					low := -pos[i][1] + p.lowest(rot[i])
-					if isCand[i] {
-						lift = math.Max(lift, low)
-					} else {
-						other = math.Max(other, low)
-					}
+					low = math.Max(low, -pos[i][1]+p.lowest(rot[i]))
 				}
-				r.liftMiss = math.Max(r.liftMiss, other-lift)
-				r.liftLo, r.liftHi = math.Min(r.liftLo, lift), math.Max(r.liftHi, lift)
-				if ph.q > 0.1 {
-					// how much of the squash the ball centre followed
-					r.sinkLo = math.Min(r.sinkLo, (ph.floor+ph.q-lift)/ph.q)
+				r.floorIn = math.Max(r.floorIn, low-p.floor(ph))
+				if ph.q > 0 {
+					r.floorOff = math.Max(r.floorOff, p.floor(ph)-low)
 				}
 				for i := range nc {
 					for j := i + 1; j < nc; j++ {
@@ -125,7 +109,7 @@ func (p *params) verify(fps float64) stats {
 	}
 	wg.Wait()
 
-	out := stats{samples: steps, minGap: math.Inf(1), minWall: math.Inf(1), rLo: math.Inf(1), liftLo: math.Inf(1), liftMiss: math.Inf(-1), sinkLo: 1}
+	out := stats{samples: steps, minGap: math.Inf(1), minWall: math.Inf(1), rLo: math.Inf(1), floorIn: math.Inf(-1)}
 	for _, r := range res {
 		if r.minGap < out.minGap {
 			out.minGap, out.gapT, out.gapPair = r.minGap, r.gapT, r.gapPair
@@ -134,9 +118,11 @@ func (p *params) verify(fps float64) stats {
 		out.overlaps += r.overlaps
 		out.minWall = math.Min(out.minWall, r.minWall)
 		out.rLo, out.rHi = math.Min(out.rLo, r.rLo), math.Max(out.rHi, r.rHi)
-		out.liftMiss = math.Max(out.liftMiss, r.liftMiss)
-		out.liftLo, out.liftHi = math.Min(out.liftLo, r.liftLo), math.Max(out.liftHi, r.liftHi)
-		out.sinkLo = math.Min(out.sinkLo, r.sinkLo)
+		out.floorIn = math.Max(out.floorIn, r.floorIn)
+		out.floorOff = math.Max(out.floorOff, r.floorOff)
+		if r.maxAcc > out.maxAcc {
+			out.maxAcc, out.accT, out.accCube = r.maxAcc, r.accT, r.accCube
+		}
 	}
 
 	// the two states the loop turns at
