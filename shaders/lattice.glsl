@@ -133,7 +133,7 @@ bool lineAlive(ivec3 n, int axis) {
 int halfEdges(ivec3 n) {
     bool deep = n.y > 0 && n.y < LAT_YMAX && latSdf(vec2(n.xz)) >= 1.0;
     int m = 0;
-    for (int a = 0; a < 3; a++) {
+    for (int a = ZERO; a < 3; a++) {
         if (!lineAlive(n, a)) continue;
         if (deep || edgeInRegion(n, a)) m |= 1 << (2 * a);
         if (deep || edgeInRegion(n - axisVec(a), a)) m |= 2 << (2 * a);
@@ -152,14 +152,14 @@ int joint(ivec3 n) {
     // one axis that passes straight through; the floor continues the
     // vertical line at the bottom joints
     int p = n.y == 0 ? e | ((e & 4) << 1) : e;
-    for (int i = 0; i < 3 && k == 0; i++) {
+    for (int i = ZERO; i < 3 && k == 0; i++) {
         if (((p >> (2 * a)) & 3) == 3) k = 3 << (2 * a);
         else a = (a + 1) % 3;
     }
 #else
     // one half-edge on a preferred axis, then one on another axis
     int s = int(h.z < 0.5), first = -1;
-    for (int i = 0; i < 3 && first < 0; i++) {
+    for (int i = ZERO; i < 3 && first < 0; i++) {
         if (((e >> (2 * a + s)) & 1) != 0) first = 2 * a + s;
         else if (((e >> (2 * a + 1 - s)) & 1) != 0) first = 2 * a + 1 - s;
         else a = (a + 1) % 3;
@@ -167,7 +167,7 @@ int joint(ivec3 n) {
     if (first >= 0) {
         float h2 = fract(h.z * 13.7);
         int b = (a + 1 + int(h2 < 0.5)) % 3, s2 = int(fract(h2 * 7.3) < 0.5);
-        for (int i = 0; i < 2 && k == 0; i++) {
+        for (int i = ZERO; i < 2 && k == 0; i++) {
             if (((e >> (2 * b + s2)) & 1) != 0) k = (1 << first) | (1 << (2 * b + s2));
             else if (((e >> (2 * b + 1 - s2)) & 1) != 0) k = (1 << first) | (1 << (2 * b + 1 - s2));
             else b = 3 - a - b;

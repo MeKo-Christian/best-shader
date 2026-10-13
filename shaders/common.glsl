@@ -7,6 +7,10 @@
 #define PI  3.14159265359
 #define TAU 6.28318530718
 
+// 0 at runtime, but unknown to the compiler: loops that start at ZERO are
+// not unrolled, which keeps WebGL (ANGLE) compile times down.
+#define ZERO min(0, iFrame)
+
 // ---- camera lens (both passes: Buffer B picks its sample count by it) --------
 #ifndef APERTURE
 #define APERTURE 6.0
@@ -67,7 +71,7 @@ float noise(vec2 x) {
 // Fractal value noise in roughly [0, 1].
 float fbm(vec2 p, int octaves) {
     float v = 0.0, amp = 0.5, norm = 0.0;
-    for (int i = 0; i < octaves; i++) {
+    for (int i = ZERO; i < octaves; i++) {
         v += amp * noise(p);
         norm += amp;
         p = rot(0.6) * p * 2.03 + 17.1;

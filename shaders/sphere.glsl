@@ -73,7 +73,7 @@ float roundCubeHit(vec3 ro, vec3 rd) {
     float t = max(max(tn.x, tn.y), tn.z), tOut = min(min(tf.x, tf.y), tf.z);
     if (t > tOut || tOut < 0.0) return -1.0;
     t = max(t, 0.0);
-    for (int k = 0; k < 12; k++) {
+    for (int k = ZERO; k < 12; k++) {
         float d = roundCube(ro + rd * t);
         if (d < 1e-4) return t;
         t += d;
@@ -126,7 +126,7 @@ void sphereCandidates(vec3 ro, vec3 rd, float spread) {
     sphNCand = 0;
     vec3 bro = toBall(ro), brd = ballDir(rd);
     if (!bundleMeets(bro, brd, spread, vec3(0.0), sphBound)) return;
-    for (int k = 0; k < 54; k++) {
+    for (int k = ZERO; k < 54; k++) {
         vec4 cs = clusterSphere(k);
         if (!bundleMeets(bro, brd, spread, cs.xyz, cs.w)) continue;
         int f = k / 9, bj = (k / 3) % 3, bi = k % 3;
@@ -200,7 +200,7 @@ float sphereLightVisUncached(vec3 p, vec3 lc, float lr, int skip) {
     if (sqrt(max(dc * dc - along * along, 0.0)) > sphBound + a * max(along, 0.0) + sphBound * a) return 1.0;
 
     float vis = 1.0;
-    for (int k = 0; k < 54; k++) {
+    for (int k = ZERO; k < 54; k++) {
         // a cube of the cluster covers part of the light only if its centre
         // lies within a * dist + SPH_REQ of the line towards the light
         vec4 cs = clusterSphere(k);
@@ -237,7 +237,7 @@ float sphVisVal[SPH_VIS_CACHE];
 int sphVisNext = 0;
 float sphereLightVis(vec3 p, vec3 lc, float lr, int skip, int slot) {
     int key = 2 * skip + slot;
-    for (int k = 0; k < SPH_VIS_CACHE; k++)
+    for (int k = ZERO; k < SPH_VIS_CACHE; k++)
         if (sphVisKey[k] == key) return sphVisVal[k];
     float vis = sphereLightVisUncached(p, lc, lr, skip);
     sphVisKey[sphVisNext] = key;
@@ -254,7 +254,7 @@ float sphereLightVis(vec3 p, vec3 lc, float lr, int skip, int slot) {
 float sphereOcclusion(vec3 p, vec3 n, int skip) {
     vec3 bp = toBall(p), bn = ballDir(n);
     float occ = 0.0;
-    for (int k = 0; k < 54; k++) {
+    for (int k = ZERO; k < 54; k++) {
         vec4 cs = clusterSphere(k);
         vec3 v = cs.xyz - bp;
         if (length(v) > cs.w + SPH_AO_RANGE || dot(v, bn) < -cs.w) continue;

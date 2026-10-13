@@ -303,40 +303,49 @@ float traceLattice(vec3 ro, vec3 rd, out vec3 nor) {
     float tBest = 1e9;
     vec3 cBest = vec3(0.0), hBest = vec3(1.0);
 
-    for (int i = 0; i < MAX_STEPS; i++) {
+    // States of the cell's eight corner joints, index x + 2y + 4z. A step
+    // keeps the four corners the cells share: then only the corners whose
+    // index has the bit side (1 << axis, or 0 for the low side) are new.
+    int k[8];
+    int axis = -1, side = 0;
+
+    for (int i = ZERO; i < MAX_STEPS; i++) {
         float tExit = min(min(tMax.x, tMax.y), tMax.z);
 
-        if (nearRegion(c)) {
+        bool nearCell = nearRegion(c);
+        if (nearCell) {
             if (latSdf(vec2(c.xz) + 0.5) > LAT_DMAX) break;
 
-            // states of the eight corner joints, index x + 2y + 4z
-            int k[8];
-            for (int j = 0; j < 8; j++) k[j] = joint(c + ivec3(j & 1, (j >> 1) & 1, j >> 2));
+            int bit = axis < 0 ? 0 : 1 << axis;
+            for (int j = ZERO; j < 8; j++)
+                if (axis < 0 || (j & bit) == side) k[j] = joint(c + ivec3(j & 1, (j >> 1) & 1, j >> 2));
 
             vec3 o = vec3(c);
-            for (int a = 0; a < 2; a++) {
-                for (int b = 0; b < 2; b++) {
+            for (int a = ZERO; a < 2; a++) {
+                for (int b = ZERO; b < 2; b++) {
                     int ix = 2 * a + 4 * b, iy = a + 4 * b, iz = a + 2 * b;
                     if (edgeOn(c + ivec3(0, a, b), 0, k[ix], k[ix + 1])) boxTest(ro, ird, o + vec3(0.5, a, b), vec3(0.5, HB, HB), tBest, cBest, hBest);
                     if (edgeOn(c + ivec3(a, 0, b), 1, k[iy], k[iy + 2])) boxTest(ro, ird, o + vec3(a, 0.5, b), vec3(HB, 0.5, HB), tBest, cBest, hBest);
                     if (edgeOn(c + ivec3(a, b, 0), 2, k[iz], k[iz + 4])) boxTest(ro, ird, o + vec3(a, b, 0.5), vec3(HB, HB, 0.5), tBest, cBest, hBest);
                 }
             }
-            for (int j = 0; j < 8; j++)
+            for (int j = ZERO; j < 8; j++)
                 if (nodeOn(k[j])) boxTest(ro, ird, o + vec3(j & 1, (j >> 1) & 1, j >> 2), vec3(HB), tBest, cBest, hBest);
         }
 
         if (tBest <= tExit || tExit > tOut) break;
 
-        if (tMax.x < tMax.y && tMax.x < tMax.z) {
-            c.x += int(stp.x);
-            tMax.x += tDel.x;
-        } else if (tMax.y < tMax.z) {
-            c.y += int(stp.y);
-            tMax.y += tDel.y;
-        } else {
-            c.z += int(stp.z);
-            tMax.z += tDel.z;
+        int a = tMax.x < tMax.y && tMax.x < tMax.z ? 0 : tMax.y < tMax.z ? 1 : 2;
+        int s = int(stp[a]);
+        c[a] += s;
+        tMax[a] += tDel[a];
+        // the far side's corners become the near side's
+        axis = nearCell ? a : -1;
+        int bit = 1 << a;
+        side = s > 0 ? bit : 0;
+        if (nearCell) {
+            for (int j = ZERO; j < 8; j++)
+                if ((j & bit) != side) k[j] = k[j ^ bit];
         }
     }
 
@@ -466,7 +475,7 @@ vec3 slabNormal(vec3 s) {
 
 // Sphere-trace the slabs from the top-plane hit t; eps is the cone half-angle.
 float traceSlabs(vec3 ro, vec3 rd, float t, float eps) {
-    for (int i = 0; i < 48; i++) {
+    for (int i = ZERO; i < 48; i++) {
         float d = slabDist(toTile(ro + rd * t)) * TILE;
         if (d < eps * t) break;
         t += d;
@@ -478,7 +487,7 @@ float traceSlabs(vec3 ro, vec3 rd, float t, float eps) {
 // above the top plane, so the march ends there; k = 1 / tan(light radius).
 float slabShadow(vec3 s, vec3 l, float k) {
     float res = 1.0, t = 0.003;
-    for (int i = 0; i < 24; i++) {
+    for (int i = ZERO; i < 24; i++) {
         if (s.y + l.y * t > 0.0) break;
         float h = slabDist(s + l * t);
         res = min(res, k * h / t);
@@ -667,7 +676,7 @@ float aoVal[AO_CACHE];
 int aoNext = 0;
 float cubeOpen(vec3 p, vec3 n, int id, int face) {
     int key = id * 8 + face;
-    for (int k = 0; k < AO_CACHE; k++)
+    for (int k = ZERO; k < AO_CACHE; k++)
         if (aoKey[k] == key) return aoVal[k];
     float v = clamp(1.0 - sphereOcclusion(p, n, id), 0.0, 1.0);
     aoKey[aoNext] = key;
@@ -856,7 +865,7 @@ vec4 render(vec2 fragCoord, float spp) {
     vec3 col = vec3(0.0), pass = vec3(1.0);
     float depth = -1.0, tS = 0.0;
     hitBall = false;
-    for (int k = 0; k < GLASS_LAYERS; k++) {
+    for (int k = ZERO; k < GLASS_LAYERS; k++) {
         tS = sphereHit(ro, rd, id, tS, nor, id, lp);
         if (tS < 0.0 || tS >= tF) break;
         if (k == 0) {
@@ -908,24 +917,28 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     return;
 #endif
 
-    // The first sample also gives the one depth per pixel the DOF pass needs.
-    vec4 first = render(fragCoord + vec2(0.5 / float(AA) - 0.5), float(AA));
+    // One call site of render(), so that the compiler inlines it only once.
+    vec3 col = vec3(0.0);
+    float depth = 0.0;
+    int n = 0;
+    for (int k = ZERO; k < AA * AA; k++) {
+        vec4 s = render(fragCoord + (vec2(k % AA, k / AA) + 0.5) / float(AA) - 0.5, float(AA));
+        col += s.rgb;
+        n++;
+        if (k > 0) continue;
 
-    // A blurred lattice pixel needs no more samples: its beams are wide and
-    // smooth, and the bokeh hides the aliasing of their edges. The floor keeps
-    // all samples even when blurred, because its far joints are finer than a
-    // pixel and would alias into moire that no blur removes.
-    vec3 ro, rd, fwd;
-    cameraRay(fragCoord, ro, rd, fwd);
-    float zFloor = rd.y < -1e-3 ? -ro.y / rd.y * dot(rd, fwd) : 1e3;
-    bool lattice = !hitBall && (first.a < 0.99 * zFloor || zFloor >= 1e3);
-    first.a /= camFocus;
-    if (lattice && cocRadius(first.a, iResolution.y / 1254.0) > AA_COC) {
-        fragColor = first;
-        return;
+        // The first sample also gives the one depth per pixel the DOF pass
+        // needs. A blurred lattice pixel needs no more samples: its beams are
+        // wide and smooth, and the bokeh hides the aliasing of their edges.
+        // The floor keeps all samples even when blurred, because its far
+        // joints are finer than a pixel and would alias into moire that no
+        // blur removes.
+        vec3 ro, rd, fwd;
+        cameraRay(fragCoord, ro, rd, fwd);
+        float zFloor = rd.y < -1e-3 ? -ro.y / rd.y * dot(rd, fwd) : 1e3;
+        bool lattice = !hitBall && (s.a < 0.99 * zFloor || zFloor >= 1e3);
+        depth = s.a / camFocus;
+        if (lattice && cocRadius(depth, iResolution.y / 1254.0) > AA_COC) break;
     }
-    vec3 col = first.rgb;
-    for (int k = 1; k < AA * AA; k++)
-        col += render(fragCoord + (vec2(k % AA, k / AA) + 0.5) / float(AA) - 0.5, float(AA)).rgb;
-    fragColor = vec4(col / float(AA * AA), first.a);
+    fragColor = vec4(col / float(n), depth);
 }

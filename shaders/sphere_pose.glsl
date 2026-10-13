@@ -67,7 +67,7 @@ void sphereTime() {
     sphQ = 0.0;
     sphA = 0.0;
     sphAir = 0.0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = ZERO; i < 3; i++) {
         bool big = i == 2;
         float tc = big ? SPH_DEEP_T * SPH_CONTACT : SPH_CONTACT, ta = big ? SPH_BIG_AIR : SPH_AIR;
         float h = big ? SPH_BIG * SPH_HOP : SPH_HOP, v = big ? SPH_VBIG : SPH_VLAND;
