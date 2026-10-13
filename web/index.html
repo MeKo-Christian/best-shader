@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Best Shader</title>
+    <link rel="icon" href="data:," />
+    <meta
+      name="description"
+      content="A GLSL scene: a ball of glass cubes bouncing on a tiled marble floor in front of a beam lattice."
+    />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+      }
+      /* The scene is square: centre it, letterboxed in black. */
+      canvas {
+        display: block;
+        position: absolute;
+        inset: 0;
+        margin: auto;
+        width: min(100vw, 100vh);
+        height: min(100vw, 100vh);
+      }
+      #credits {
+        position: fixed;
+        right: 12px;
+        bottom: 10px;
+        font:
+          12px/1.4 system-ui,
+          sans-serif;
+        color: #dcb;
+        opacity: 0.45;
+        transition: opacity 0.4s;
+      }
+      #credits:hover {
+        opacity: 0.9;
+      }
+      #credits a {
+        color: inherit;
+      }
+      #error {
+        position: fixed;
+        inset: 0;
+        margin: 0;
+        padding: 16px;
+        color: #f88;
+        background: rgba(0, 0, 0, 0.85);
+        font: 12px/1.4 monospace;
+        white-space: pre-wrap;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="credits">
+      <a href="https://github.com/MeKo-Christian/best-shader">source</a> · Space
+      pauses, F fullscreen
+    </div>
+    <pre id="error" hidden></pre>
+    <script type="module" src="player.js"></script>
+  </body>
+</html>
