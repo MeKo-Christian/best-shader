@@ -34,6 +34,7 @@ func axisAngle(k vec, a float64) mat {
 	col := func(e vec) vec {
 		return e.mul(c).add(k.cross(e).mul(s)).add(k.mul(k.dot(e) * (1 - c)))
 	}
+
 	return mat{col(vec{1, 0, 0}), col(vec{0, 1, 0}), col(vec{0, 0, 1})}
 }
 
@@ -56,12 +57,15 @@ func support(m mat, h float64, n vec) float64 {
 func satGap(ca vec, ma mat, cb vec, mb mat, h float64) float64 {
 	t := cb.sub(ca)
 	best := math.Inf(-1)
+
 	test := func(l vec) {
 		n := l.length()
 		if n < 1e-9 {
 			return
 		}
+
 		l = l.mul(1 / n)
+
 		g := math.Abs(t.dot(l)) - support(ma, h, l) - support(mb, h, l)
 		if g > best {
 			best = g
@@ -70,9 +74,11 @@ func satGap(ca vec, ma mat, cb vec, mb mat, h float64) float64 {
 	for i := range 3 {
 		test(ma[i])
 		test(mb[i])
+
 		for j := range 3 {
 			test(ma[i].cross(mb[j]))
 		}
 	}
+
 	return best
 }

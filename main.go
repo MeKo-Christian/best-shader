@@ -187,14 +187,14 @@ func writeBundle(opt *options) error {
 	if len(srcs.buffers) > 0 {
 		var tabs, directives strings.Builder
 
-		for k, buf := range srcs.buffers {
-			bufPath := bufferBundlePath(opt.bundle, k)
+		for slot, buf := range srcs.buffers {
+			bufPath := bufferBundlePath(opt.bundle, slot)
 			bufName := filepath.Base(bufPath)
 			bufHeader := fmt.Sprintf("// Bundled from %s by best-shader runner. Paste into Shadertoy's %s tab.\n",
-				buf.files[0], passName(k))
+				buf.files[0], passName(slot))
 
-			if k > 0 {
-				bufHeader += "// Set" + channelHint(k-1)
+			if slot > 0 {
+				bufHeader += "// Set" + channelHint(slot-1)
 			}
 
 			err = writeText(bufPath, bundle(buf, opt.defines, bufHeader))
@@ -202,8 +202,8 @@ func writeBundle(opt *options) error {
 				return err
 			}
 
-			fmt.Fprintf(&tabs, "// - %s into the %s tab\n", bufName, passName(k))
-			fmt.Fprintf(&directives, "// #buffer%s \"%s\"\n", bufferLetter(k), bufName)
+			fmt.Fprintf(&tabs, "// - %s into the %s tab\n", bufName, passName(slot))
+			fmt.Fprintf(&directives, "// #buffer%s \"%s\"\n", bufferLetter(slot), bufName)
 		}
 
 		header += "// Multipass: paste\n" + tabs.String() + "// and set" + channelHint(len(srcs.buffers)-1) +

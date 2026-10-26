@@ -65,11 +65,13 @@ type params struct {
 func (p *params) derive(radius float64) {
 	p.rReg = p.regularRadius()
 	p.scale = radius / (p.rReg + 0.5)
+
 	p.low = 0
 	for i := range 6 * p.n * p.n {
 		c, m, _ := p.cubePoseAt(i, 0, phase{})
 		p.low = math.Max(p.low, -c[1]+p.lowest(m))
 	}
+
 	ratio := math.Pi * p.squash * p.scale / (4 * p.hop) // contact / air
 	p.air = p.period / ((2+p.deepT)*ratio + 2 + math.Sqrt(p.big))
 	p.contact = ratio * p.air
@@ -107,6 +109,7 @@ func hashU(x uint32) uint32 {
 	x ^= x >> 15
 	x *= 0x846ca68b
 	x ^= x >> 16
+
 	return x
 }
 
@@ -116,7 +119,7 @@ func rnd(k uint32, c uint32) float64 { return float64(hashU(k*8+c)>>8) / 1677721
 // ---- grid ---------------------------------------------------------------
 
 // faceBasis returns the normal and the two in-plane axes of cube face f.
-func faceBasis(f int) (n, u, v [3]int) {
+func faceBasis(f int) ([3]int, [3]int, [3]int) {
 	switch f {
 	case 0:
 		return [3]int{1, 0, 0}, [3]int{0, 0, -1}, [3]int{0, 1, 0}
@@ -137,10 +140,12 @@ func faceBasis(f int) (n, u, v [3]int) {
 // and the same from every face that shares it.
 func (p *params) gridPoint(f, a, b int) [3]int {
 	n, u, v := faceBasis(f)
+
 	var k [3]int
 	for c := range 3 {
 		k[c] = p.n*n[c] + (2*a-p.n)*u[c] + (2*b-p.n)*v[c]
 	}
+
 	return k
 }
 
@@ -148,10 +153,12 @@ func (p *params) gridPoint(f, a, b int) [3]int {
 func nowell(x vec) vec {
 	q := vec{x[0] * x[0], x[1] * x[1], x[2] * x[2]}
 	var d vec
+
 	for c := range 3 {
 		a, b := q[(c+1)%3], q[(c+2)%3]
 		d[c] = x[c] * math.Sqrt(1-0.5*a-0.5*b+a*b/3)
 	}
+
 	return d
 }
 
@@ -204,31 +211,41 @@ func (p *params) phaseAt(t float64) phase {
 		if i == 2 {
 			tc, ta, h, v = p.deepT*p.contact, p.bigAir, p.big*p.hop, p.vBig
 		}
+
 		if t < tc {
 			x := t / tc
+
 			vIn := p.vLand
 			if i == 0 {
 				vIn = p.vBig
 			}
+
 			q := tc / math.Pi * math.Sin(math.Pi*x) * mix(vIn, v, smootherstep(x))
 			if i == 2 {
 				q += p.deepExtra() * math.Pow(math.Sin(math.Pi*x), 2)
 			}
+
 			return phase{q: q, a: q}
 		}
+
 		t -= tc
 		if t < ta || i == 2 {
 			x := t / ta
+
 			u := 0.0
 			if i == 2 {
 				u = p.morph(x)
 			}
+
 			w := math.Pi / p.contact
 			a := -v / w * math.Exp(-p.damp*t) * math.Sin(w*t) * (1 - smootherstep(x))
+
 			return phase{u: u, a: a, air: 4 * h * x * (1 - x)}
 		}
+
 		t -= ta
 	}
+
 	return phase{}
 }
 
@@ -279,6 +296,7 @@ func (p *params) vertex(k [3]int, t float64, ph phase) vec {
 	for _, k := range warpWaves {
 		o = o.add(d.cross(k.k).mul(sw * math.Cos(k.k.dot(d)+p.omega(k.cycles)*t+k.phase)))
 	}
+
 	o = o.sub(d.mul(o.dot(d)))
 	d = d.add(o).normalize()
 	// pressed onto the floor, the bottom spreads: the vertices move away
@@ -290,6 +308,7 @@ func (p *params) vertex(k [3]int, t float64, ph phase) vec {
 		w := p.splay * ph.q * (1 + c) * (1 + c) / 4
 		d = d.add(vec{d[0] * c, 1 - c*c, d[2] * c}.mul(w)).normalize()
 	}
+
 	return d
 }
 
@@ -298,6 +317,7 @@ func (p *params) vertex(k [3]int, t float64, ph phase) vec {
 func (p *params) cell(i int, t float64, ph phase) [4]vec {
 	nn := p.n * p.n
 	f, j, k := i/nn, i%nn/p.n, i%p.n
+
 	return [4]vec{
 		p.vertex(p.gridPoint(f, k, j), t, ph),
 		p.vertex(p.gridPoint(f, k+1, j), t, ph),
@@ -306,14 +326,14 @@ func (p *params) cell(i int, t float64, ph phase) [4]vec {
 	}
 }
 
-// cubePose is the centre and the axes of cube i at time t in ball space;
-// s is its progress towards the irregular state.
-func (p *params) cubePose(i int, t float64) (c vec, m mat, s float64) {
+// cubePose is the centre and the axes of cube i at time t in ball space,
+// and its progress towards the irregular state.
+func (p *params) cubePose(i int, t float64) (vec, mat, float64) {
 	return p.cubePoseAt(i, t, p.phaseAt(t))
 }
 
 // cubePoseAt is cubePose in the bounce phase ph.
-func (p *params) cubePoseAt(i int, t float64, ph phase) (c vec, m mat, s float64) {
+func (p *params) cubePoseAt(i int, t float64, ph phase) (vec, mat, float64) {
 	return p.cubePoseRamp(i, t, ph, true)
 }
 
@@ -321,7 +341,7 @@ func (p *params) cubePoseAt(i int, t float64, ph phase) (c vec, m mat, s float64
 // straight from the regular radius to its own irregular one (the pose at
 // u = 1, without ramp), so that the cube does not swing in first and out
 // again where its tumble makes it need more room.
-func (p *params) cubePoseRamp(i int, t float64, ph phase, ramp bool) (c vec, m mat, s float64) {
+func (p *params) cubePoseRamp(i int, t float64, ph phase, ramp bool) (vec, mat, float64) {
 	u := ph.u
 	q := p.cell(i, t, ph)
 	h := cubeKey(i)
@@ -329,27 +349,23 @@ func (p *params) cubePoseRamp(i int, t float64, ph phase, ramp bool) (c vec, m m
 	// the regular state stands in the middle of the cell, the irregular one
 	// off it
 	d0 := q[0].add(q[1]).add(q[2]).add(q[3]).normalize()
-	s = p.stage(u, rnd(h, 0), d0)
+	s := p.stage(u, rnd(h, 0), d0)
 	x := 0.5 + p.offset*s*(rnd(h, 1)-0.5)
 	y := 0.5 + p.offset*s*(rnd(h, 2)-0.5)
 	d := q[0].mul((1 - x) * (1 - y)).add(q[1].mul(x * (1 - y))).add(q[2].mul(x * y)).add(q[3].mul((1 - x) * y)).normalize()
 
-	// axes: z outwards, x and y symmetric between the cell's two directions
-	tu := q[1].add(q[2]).sub(q[0]).sub(q[3])
-	tv := q[2].add(q[3]).sub(q[0]).sub(q[1])
-	tu = tu.sub(d.mul(tu.dot(d))).normalize()
-	tv = tv.sub(d.mul(tv.dot(d))).normalize()
-	a := tu.add(tv).normalize().add(tu.sub(tv).normalize()).normalize()
-	m = mat{a, d.cross(a), d}
+	m := cellAxes(q, d)
 
 	// the cell's walls: planes through the centre and two neighbouring
 	// corners, normals inwards; wd is how far d stays from them
 	var w [4]vec
 	var wd [4]float64
+
 	for e := range 4 {
 		w[e] = q[e].cross(q[(e+1)%4]).normalize()
 		wd[e] = w[e].dot(d)
 	}
+
 	narrow := -smax(smax(-wd[0], -wd[1], narrowK), smax(-wd[2], -wd[3], narrowK), narrowK)
 
 	// A tumbled cube reaches further towards the walls (by up to the
@@ -360,26 +376,9 @@ func (p *params) cubePoseRamp(i int, t float64, ph phase, ramp bool) (c vec, m m
 	ang := p.tumble * mix(0.35, 1, rnd(h, 6)) * room * s
 	m = axisAngle(axis, ang).mul(m)
 
-	// the smallest radius that keeps the cube inside the cone: the rounded
-	// cube's support along each wall normal against the wall's distance (a
-	// smooth maximum, never below the true one, so that the cube does not
-	// jerk when another wall takes over)
-	fitOf := func(m mat) float64 {
-		var fit [4]float64
-		for e := range 4 {
-			sup := (0.5-p.bevel)*(math.Abs(m[0].dot(w[e]))+math.Abs(m[1].dot(w[e]))+math.Abs(m[2].dot(w[e]))) + p.bevel + p.marg
-			fit[e] = sup / wd[e]
-		}
-		return smax(smax(fit[0], fit[1], fitK), smax(fit[2], fit[3], fitK), fitK)
-	}
-	hold, sk := p.rIrr, smaxIrrK
-	if ramp {
-		hold, sk = p.rReg, smaxK
-		if s > 0 {
-			c1, _, _ := p.cubePoseRamp(i, t, phase{u: 1}, false)
-			hold = mix(p.rReg, c1.length(), s)
-		}
-	}
+	fitOf := func(m mat) float64 { return p.coneFit(m, w, wd) }
+
+	hold, sk := p.holdRadius(i, t, s, ramp)
 	lo := fitOf(m) - p.sink*s
 	r := smax(lo, hold, sk)
 
@@ -389,26 +388,20 @@ func (p *params) cubePoseRamp(i int, t float64, ph phase, ramp bool) (c vec, m m
 	// (cubes that stand on an edge do not turn). The ball is regular
 	// whenever it touches the floor.
 	dy := d[1]
+
 	r1 := r + ph.a*(p.bulge*(1-dy*dy)-p.top*dy*dy)
 	if ph.q > 0 && i/(p.n*p.n) == 3 {
 		floor := p.floor(ph)
 		press := r*(-dy) + p.lowest(m) - floor
-		k := 0
-		for c := 1; c < 3; c++ {
-			if math.Abs(m[c][1]) > math.Abs(m[k][1]) {
-				k = c
-			}
-		}
-		f := m[k]
-		if f[1] > 0 {
-			f = f.mul(-1)
-		}
+
+		f := downFace(m)
 		if wt := smoothstep(0, flatTurn, press) * smoothstep(0.75, 0.85, -f[1]); wt > 0 && f[1] > -0.99999 {
 			m = axisAngle(f.cross(vec{0, -1, 0}).normalize(), wt*math.Acos(-f[1])).mul(m)
 			lo = fitOf(m) - p.sink*s
 			r = smax(lo, hold, sk)
 			r1 = r + ph.a*(p.bulge*(1-dy*dy)-p.top*dy*dy)
 		}
+
 		if press > 0 {
 			r1 = math.Min(r1, (floor-p.lowest(m))/(-dy))
 		}
@@ -419,7 +412,68 @@ func (p *params) cubePoseRamp(i int, t float64, ph phase, ramp bool) (c vec, m m
 	} else {
 		r = r1
 	}
+
 	return d.mul(r), m, s
+}
+
+// cellAxes are the axes of a cube at direction d in the cell q: z outwards,
+// x and y symmetric between the cell's two directions.
+func cellAxes(q [4]vec, d vec) mat {
+	tu := q[1].add(q[2]).sub(q[0]).sub(q[3])
+	tv := q[2].add(q[3]).sub(q[0]).sub(q[1])
+	tu = tu.sub(d.mul(tu.dot(d))).normalize()
+	tv = tv.sub(d.mul(tv.dot(d))).normalize()
+	a := tu.add(tv).normalize().add(tu.sub(tv).normalize()).normalize()
+
+	return mat{a, d.cross(a), d}
+}
+
+// coneFit is the smallest radius that keeps a cube with axes m inside the
+// cone of the walls w at the distances wd: the rounded cube's support along
+// each wall normal against the wall's distance (a smooth maximum, never
+// below the true one, so that the cube does not jerk when another wall
+// takes over).
+func (p *params) coneFit(m mat, w [4]vec, wd [4]float64) float64 {
+	var fit [4]float64
+
+	for e := range 4 {
+		sup := (0.5-p.bevel)*(math.Abs(m[0].dot(w[e]))+math.Abs(m[1].dot(w[e]))+math.Abs(m[2].dot(w[e]))) + p.bevel + p.marg
+		fit[e] = sup / wd[e]
+	}
+
+	return smax(smax(fit[0], fit[1], fitK), smax(fit[2], fit[3], fitK), fitK)
+}
+
+// holdRadius is the radius cube i holds at progress s and the smoothness of
+// its maximum with the cone fit (see cubePoseRamp).
+func (p *params) holdRadius(i int, t, s float64, ramp bool) (float64, float64) {
+	if !ramp {
+		return p.rIrr, smaxIrrK
+	}
+
+	if s <= 0 {
+		return p.rReg, smaxK
+	}
+
+	c1, _, _ := p.cubePoseRamp(i, t, phase{u: 1}, false)
+
+	return mix(p.rReg, c1.length(), s), smaxK
+}
+
+// downFace is the axis of m that looks most downwards, pointing down.
+func downFace(m mat) vec {
+	k := 0
+	for c := 1; c < 3; c++ {
+		if math.Abs(m[c][1]) > math.Abs(m[k][1]) {
+			k = c
+		}
+	}
+
+	if m[k][1] > 0 {
+		return m[k].mul(-1)
+	}
+
+	return m[k]
 }
 
 // sminP <= min(a, b) for a, b >= 0, smooth, and 0 where either is 0.
@@ -427,6 +481,7 @@ func sminP(a, b float64) float64 {
 	if a <= 0 || b <= 0 {
 		return 0
 	}
+
 	return a * b / math.Pow(a*a*a*a+b*b*b*b, 0.25)
 }
 
@@ -455,9 +510,11 @@ func (p *params) regularRadius() float64 {
 	q := *p
 	q.rReg, q.rIrr = 0, 0
 	r := 0.0
+
 	for i := range 6 * p.n * p.n {
 		c, _, _ := q.cubePoseAt(i, 0, phase{})
 		r = math.Max(r, c.length())
 	}
+
 	return r
 }

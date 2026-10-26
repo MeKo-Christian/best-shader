@@ -50,6 +50,24 @@ linters = ['varnamelen']
 path = '^cmd/imgstat/'
 
 [[linters.exclusions.rules]]
+# spheregen mirrors the vector math of shaders/sphere.glsl line for line
+# (p = params, c/m = cube centre/axes, q = cell corners, ph = phase).
+linters = ['varnamelen']
+path = '^cmd/spheregen/'
+
+[[linters.exclusions.rules]]
+# spheregen hashes small, non-negative grid and cube indices into uint32 keys.
+linters = ['gosec']
+path = '^cmd/spheregen/'
+text = 'G115:'
+
+[[linters.exclusions.rules]]
+# Tests use seeded math/rand on purpose: reproducible random cases.
+linters = ['gosec']
+path = '_test\.go$'
+text = 'G404:'
+
+[[linters.exclusions.rules]]
 linters = ['gochecknoglobals', 'gochecknoinits']
 path = '^(cmd/[^/]+/)?[^/]+\.go$' # the root package and cmd/* are CLIs
 
@@ -61,6 +79,12 @@ path = '^(cmd/[^/]+/)?[^/]+\.go$'
 # A CLI tool prints to stdout/stderr on purpose.
 linters = ['forbidigo']
 path = '^(cmd/[^/]+/)?[^/]+\.go$'
+
+[[linters.exclusions.rules]]
+# ... and writes generated sources and images that others read (0644).
+linters = ['gosec']
+path = '^(cmd/[^/]+/)?[^/]+\.go$'
+text = 'G306:'
 
 [severity]
 default = 'warn'

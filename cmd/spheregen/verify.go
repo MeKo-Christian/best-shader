@@ -31,10 +31,16 @@ type stats struct {
 }
 
 func (s stats) String() string {
-	return fmt.Sprintf("samples %d, min gap %.4f at t=%.3f (cubes %d, %d), overlapping pair samples %d, folded cells %d, min wall cos %.4f, "+
-		"radius %.3f..%.3f, into the floor %.4f, off the floor when pressed %.4f, largest acceleration %.2f at t=%.3f (cube %d)",
+	return fmt.Sprintf("samples %d, min gap %.4f at t=%.3f (cubes %d, %d), overlapping pair samples %d, "+
+		"folded cells %d, min wall cos %.4f, radius %.3f..%.3f, into the floor %.4f, "+
+		"off the floor when pressed %.4f, largest acceleration %.2f at t=%.3f (cube %d)",
 		s.samples, s.minGap, s.gapT, s.gapPair[0], s.gapPair[1], s.overlaps, s.folded, s.minWall,
 		s.rLo, s.rHi, s.floorIn, s.floorOff, s.maxAcc, s.accT, s.accCube)
+}
+
+// newStats is the empty result that every sample improves on.
+func newStats() stats {
+	return stats{minGap: math.Inf(1), minWall: math.Inf(1), rLo: math.Inf(1), floorIn: math.Inf(-1)}
 }
 
 // verify runs the formula over one loop at fps samples per second:
@@ -53,76 +59,19 @@ func (p *params) verify(fps float64) stats {
 
 	workers := runtime.NumCPU()
 	res := make([]stats, workers)
+
 	var wg sync.WaitGroup
 	for w := range workers {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
-			r := stats{minGap: math.Inf(1), minWall: math.Inf(1), rLo: math.Inf(1), floorIn: math.Inf(-1)}
-			pos := make([]vec, nc)
-			rot := make([]mat, nc)
-			for st := w; st < steps; st += workers {
-				t := float64(st) / fps
-				ph := p.phaseAt(t)
-				low := math.Inf(-1)
-				for i := range nc {
-					pos[i], rot[i], _ = p.cubePoseAt(i, t, ph)
-					prev, _ := p.pose(i, t-1/fps)
-					next, _ := p.pose(i, t+1/fps)
-					if acc := next.add(prev).sub(pos[i].mul(2)).length() * p.scale * fps * fps; acc > r.maxAcc {
-						r.maxAcc, r.accT, r.accCube = acc, t, i
-					}
-					q := p.cell(i, t, ph)
-					d := pos[i].normalize()
-					for e := range 4 {
-						c := q[e].cross(q[(e+1)%4]).normalize().dot(d)
-						r.minWall = math.Min(r.minWall, c)
-						if c <= 0 {
-							r.folded++
-						}
-					}
-					rad := pos[i].length()
-					r.rLo, r.rHi = math.Min(r.rLo, rad), math.Max(r.rHi, rad)
-					low = math.Max(low, -pos[i][1]+p.lowest(rot[i]))
-				}
-				r.floorIn = math.Max(r.floorIn, low-p.floor(ph))
-				if ph.q > 0 {
-					r.floorOff = math.Max(r.floorOff, p.floor(ph)-low)
-				}
-				for i := range nc {
-					for j := i + 1; j < nc; j++ {
-						if pos[i].sub(pos[j]).length() > 2*rho+math.Min(r.minGap, 0.5) {
-							continue
-						}
-						g := satGap(pos[i], rot[i], pos[j], rot[j], 0.5-p.bevel) - 2*p.bevel
-						if g < 0 {
-							r.overlaps++
-						}
-						if g < r.minGap {
-							r.minGap, r.gapT, r.gapPair = g, t, [2]int{i, j}
-						}
-					}
-				}
-			}
-			res[w] = r
-		}(w)
+		wg.Go(func() { res[w] = p.verifySteps(w, workers, steps, fps) })
 	}
+
 	wg.Wait()
 
-	out := stats{samples: steps, minGap: math.Inf(1), minWall: math.Inf(1), rLo: math.Inf(1), floorIn: math.Inf(-1)}
+	out := newStats()
+	out.samples = steps
+
 	for _, r := range res {
-		if r.minGap < out.minGap {
-			out.minGap, out.gapT, out.gapPair = r.minGap, r.gapT, r.gapPair
-		}
-		out.folded += r.folded
-		out.overlaps += r.overlaps
-		out.minWall = math.Min(out.minWall, r.minWall)
-		out.rLo, out.rHi = math.Min(out.rLo, r.rLo), math.Max(out.rHi, r.rHi)
-		out.floorIn = math.Max(out.floorIn, r.floorIn)
-		out.floorOff = math.Max(out.floorOff, r.floorOff)
-		if r.maxAcc > out.maxAcc {
-			out.maxAcc, out.accT, out.accCube = r.maxAcc, r.accT, r.accCube
-		}
+		out = out.merge(r)
 	}
 
 	// the two states the loop turns at
@@ -134,12 +83,14 @@ func (p *params) verify(fps float64) stats {
 			c, _, _ := p.cubePoseAt(i, 0, ph)
 			rs[i] = c.length()
 		}
+
 		return rs
 	}
 	lo, _, hi := quantiles(radii(reg))
 	out.regRange = [2]float64{lo, hi}
 	a, b, c := quantiles(radii(irr))
 	out.irrRange = [3]float64{a, b, c}
+
 	slide := make([]float64, nc)
 	for i := range nc {
 		c0, m0, _ := p.cubePoseAt(i, 0, reg)
@@ -147,8 +98,106 @@ func (p *params) verify(fps float64) stats {
 		slide[i] = math.Acos(math.Min(1, c0.normalize().dot(c1.normalize()))) / pitch
 		out.maxTumble = math.Max(out.maxTumble, rotationAngle(m1.mul(m0.transpose())))
 	}
+
 	_, out.medianSlide, _ = quantiles(slide)
+
 	return out
+}
+
+// verifySteps checks the samples first, first+stride, ... below steps.
+func (p *params) verifySteps(first, stride, steps int, fps float64) stats {
+	nc := 6 * p.n * p.n
+	r := newStats()
+	pos := make([]vec, nc)
+	rot := make([]mat, nc)
+
+	for st := first; st < steps; st += stride {
+		t := float64(st) / fps
+		ph := p.phaseAt(t)
+		low := math.Inf(-1)
+
+		for i := range nc {
+			pos[i], rot[i], _ = p.cubePoseAt(i, t, ph)
+			p.checkCube(&r, i, t, fps, ph, pos[i])
+			low = math.Max(low, -pos[i][1]+p.lowest(rot[i]))
+		}
+
+		r.floorIn = math.Max(r.floorIn, low-p.floor(ph))
+		if ph.q > 0 {
+			r.floorOff = math.Max(r.floorOff, p.floor(ph)-low)
+		}
+
+		p.checkPairs(&r, t, pos, rot)
+	}
+
+	return r
+}
+
+// checkCube records the acceleration, the cell walls and the radius of cube
+// i at centre c.
+func (p *params) checkCube(r *stats, i int, t, fps float64, ph phase, c vec) {
+	prev, _ := p.pose(i, t-1/fps)
+
+	next, _ := p.pose(i, t+1/fps)
+	if acc := next.add(prev).sub(c.mul(2)).length() * p.scale * fps * fps; acc > r.maxAcc {
+		r.maxAcc, r.accT, r.accCube = acc, t, i
+	}
+
+	q := p.cell(i, t, ph)
+
+	d := c.normalize()
+	for e := range 4 {
+		w := q[e].cross(q[(e+1)%4]).normalize().dot(d)
+
+		r.minWall = math.Min(r.minWall, w)
+		if w <= 0 {
+			r.folded++
+		}
+	}
+
+	rad := c.length()
+	r.rLo, r.rHi = math.Min(r.rLo, rad), math.Max(r.rHi, rad)
+}
+
+// checkPairs records the gaps between the cubes that are close enough to
+// matter at time t.
+func (p *params) checkPairs(r *stats, t float64, pos []vec, rot []mat) {
+	for i := range pos {
+		for j := i + 1; j < len(pos); j++ {
+			if pos[i].sub(pos[j]).length() > 2*rho+math.Min(r.minGap, 0.5) {
+				continue
+			}
+
+			g := satGap(pos[i], rot[i], pos[j], rot[j], 0.5-p.bevel) - 2*p.bevel
+			if g < 0 {
+				r.overlaps++
+			}
+
+			if g < r.minGap {
+				r.minGap, r.gapT, r.gapPair = g, t, [2]int{i, j}
+			}
+		}
+	}
+}
+
+// merge is s with the findings of another worker added.
+func (s stats) merge(r stats) stats {
+	if r.minGap < s.minGap {
+		s.minGap, s.gapT, s.gapPair = r.minGap, r.gapT, r.gapPair
+	}
+
+	s.folded += r.folded
+	s.overlaps += r.overlaps
+	s.minWall = math.Min(s.minWall, r.minWall)
+	s.rLo, s.rHi = math.Min(s.rLo, r.rLo), math.Max(s.rHi, r.rHi)
+	s.floorIn = math.Max(s.floorIn, r.floorIn)
+
+	s.floorOff = math.Max(s.floorOff, r.floorOff)
+	if r.maxAcc > s.maxAcc {
+		s.maxAcc, s.accT, s.accCube = r.maxAcc, r.accT, r.accCube
+	}
+
+	return s
 }
 
 func quantiles(xs []float64) (float64, float64, float64) {
@@ -158,5 +207,6 @@ func quantiles(xs []float64) (float64, float64, float64) {
 			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
+
 	return s[0], s[len(s)/2], s[len(s)-1]
 }
