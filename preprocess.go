@@ -29,8 +29,8 @@ type source struct {
 // maxBuffers is the number of buffer passes Shadertoy offers (A to D).
 const maxBuffers = 4
 
-// bufferLetter is the letter of buffer k: 'A' for 0.
-func bufferLetter(k int) string { return string(rune('A' + k)) }
+// bufferLetter is the letter of buffer k: "A" for 0.
+func bufferLetter(k int) string { return "ABCD"[k : k+1] }
 
 func (s *source) String() string {
 	return strings.Join(s.lines, "\n") + "\n"
@@ -103,11 +103,12 @@ func loadPasses(path string) (*passSources, error) {
 		return srcs, err
 	}
 
-	for k, rel := range srcs.image.buffers {
+	for slot, rel := range srcs.image.buffers {
 		if rel == "" {
-			for j := k + 1; j < maxBuffers; j++ {
+			for j := slot + 1; j < maxBuffers; j++ {
 				if srcs.image.buffers[j] != "" {
-					return srcs, fmt.Errorf("%s: #buffer%s without #buffer%s", srcs.image.bufferAt[j], bufferLetter(j), bufferLetter(k))
+					return srcs, fmt.Errorf("%s: #buffer%s without #buffer%s",
+						srcs.image.bufferAt[j], bufferLetter(j), bufferLetter(slot))
 				}
 			}
 
@@ -119,12 +120,12 @@ func loadPasses(path string) (*passSources, error) {
 
 		err = buf.include(root, dir, rel, map[string]bool{})
 		if err != nil {
-			return srcs, fmt.Errorf("%s: #buffer%s: %w", srcs.image.bufferAt[k], bufferLetter(k), err)
+			return srcs, fmt.Errorf("%s: #buffer%s: %w", srcs.image.bufferAt[slot], bufferLetter(slot), err)
 		}
 
 		for j, at := range buf.bufferAt {
 			if at != "" {
-				return srcs, fmt.Errorf("%s: Buffer %s cannot declare #buffer%s itself", at, bufferLetter(k), bufferLetter(j))
+				return srcs, fmt.Errorf("%s: Buffer %s cannot declare #buffer%s itself", at, bufferLetter(slot), bufferLetter(j))
 			}
 		}
 	}
@@ -152,13 +153,13 @@ func (s *source) include(root *os.Root, dir, rel string, seen map[string]bool) e
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
 	for i, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
 		if match := bufferRe.FindStringSubmatch(line); match != nil {
-			k := int(match[1][0] - 'A')
-			if s.buffers[k] != "" {
+			slot := int(match[1][0] - 'A')
+			if s.buffers[slot] != "" {
 				return fmt.Errorf("%s:%d: second #buffer%s directive", path, i+1, match[1])
 			}
 
-			s.buffers[k] = filepath.Join(filepath.Dir(rel), match[2])
-			s.bufferAt[k] = fmt.Sprintf("%s:%d", path, i+1)
+			s.buffers[slot] = filepath.Join(filepath.Dir(rel), match[2])
+			s.bufferAt[slot] = fmt.Sprintf("%s:%d", path, i+1)
 
 			continue
 		}

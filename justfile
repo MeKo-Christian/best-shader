@@ -122,6 +122,13 @@ bench dur="3s" *args:
     go run . -bench {{dur}} -size 1280x720 {{args}}
     go run . -bench {{dur}} -size 2560x1440 {{args}}
 
+# Static WebGL2 site in out/web (what the Pages workflow publishes), served on :8000
+web port="8000" *args:
+    rm -rf out/web && mkdir -p out/web
+    go run . -bundle out/web/shadertoy.glsl {{args}}
+    cp web/* out/web/
+    npx --yes http-server out/web -p {{port}} -c-1
+
 # Shadertoy export (multipass: plus out/shadertoy_bufferA.glsl, ..._bufferB.glsl), verified by rendering it back
 bundle *args:
     go run . -bundle out/shadertoy.glsl {{args}}

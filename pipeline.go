@@ -143,15 +143,15 @@ func (r *renderer) draw(pipe *pipeline, uni frameUniforms, out uint32) error {
 	prev := uint32(0)
 	passUni := uni
 
-	for k, prog := range pipe.buffers {
-		gl.BindFramebuffer(gl.FRAMEBUFFER, r.buffers[k].id)
+	for slot, prog := range pipe.buffers {
+		gl.BindFramebuffer(gl.FRAMEBUFFER, r.buffers[slot].id)
 		gl.BindTexture(gl.TEXTURE_2D, prev)
-		r.timer.begin(k)
+		r.timer.begin(slot)
 		r.screen.draw(prog, passUni)
 		r.timer.end()
 
-		prev = r.buffers[k].tex
-		passUni.channelRes[0] = [3]float32{float32(r.buffers[k].width), float32(r.buffers[k].height), 1}
+		prev = r.buffers[slot].tex
+		passUni.channelRes[0] = [3]float32{float32(r.buffers[slot].width), float32(r.buffers[slot].height), 1}
 	}
 
 	gl.BindFramebuffer(gl.FRAMEBUFFER, out)
@@ -166,9 +166,9 @@ func (r *renderer) draw(pipe *pipeline, uni frameUniforms, out uint32) error {
 	return nil
 }
 
-// ensureBuffers (re)allocates n buffer targets at w x h.
-func (r *renderer) ensureBuffers(n, w, h int) error {
-	if len(r.buffers) == n && r.buffers[0].width == w && r.buffers[0].height == h {
+// ensureBuffers (re)allocates count buffer targets at w x h.
+func (r *renderer) ensureBuffers(count, w, h int) error {
+	if len(r.buffers) == count && r.buffers[0].width == w && r.buffers[0].height == h {
 		return nil
 	}
 
@@ -178,7 +178,7 @@ func (r *renderer) ensureBuffers(n, w, h int) error {
 
 	r.buffers = nil
 
-	for k := range n {
+	for k := range count {
 		target, err := newFBO(w, h, bufferFormat)
 		if err != nil {
 			return fmt.Errorf("%s target: %w", passName(k), err)
